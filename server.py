@@ -1,0 +1,678 @@
+"""FastAPI server — what the frontend talks to.
+
+Endpoints (see FRONTEND.md):
+  POST /runs                 -> {"run_id": ...}    start a run in the background
+  GET  /runs/{id}            -> run_state JSON     current state (Mode A polling)
+  GET  /runs/{id}/stream     -> SSE                push step/status events (Mode B)
+  POST /runs/{id}/report     -> {"path": ...}      generate HTML report
+  POST /runs/{id}/log-bugs   -> {"created": [...]} gated: only on done + has failures
+  POST /runs/{id}/cancel     -> {"cancelled": true} cancel a running background task
+
+In production, also serves frontend/dist as static files.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+import os
+from contextlib import asynccontextmanager
+from datetime import datetime
+from pathlib import Path
+from typing import Literal
+
+from dotenv import load_dotenv
+from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
+from sse_starlette.sse import EventSourceResponse
+
+from agent.case_source import CaseSource, FixtureCaseSource
+from agent.knowledge import record_override
+from agent.manual_state import ManualStore, compose_agent_note, compose_comment
+from agent.orchestrator import Orchestrator
+from agent.run_state import RunState, TestCase
+
+# On Windows, the default uvicorn event loop (SelectorEventLoop) cannot spawn
+# subprocesses, so Playwright's browser launch fails with NotImplementedError and
+# every agent run blocks at "open browser". The ProactorEventLoop can spawn
+# subprocesses. Set the policy at MODULE LEVEL (not under __main__) so it also
+# applies to the worker the --reload supervisor imports. No-op off Windows.
+import sys
+
+if sys.platform == "win32":
+    asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+
+load_dotenv()
+
+# Duke's corporate network does TLS inspection; the inspecting root CA lives in
+# the OS (Windows) trust store, not in certifi. truststore makes Python's ssl use
+# the OS store so httpx calls to QMetry / Jira / Azure verify instead of failing
+# with CERTIFICATE_VERIFY_FAILED. Best-effort: skip cleanly if unavailable.
+try:
+    import truststore
+
+    truststore.inject_into_ssl()
+except Exception:  # pragma: no cover - environment-dependent
+    pass
+
+log = logging.getLogger(__name__)
+
+# In-memory registry. Single-process; if scaled to multiple workers, move to a store.
+RUNS: dict[str, RunState] = {}
+TASKS: dict[str, asyncio.Task] = {}
+LISTENERS: dict[str, list[asyncio.Queue]] = {}
+# Snapshot the latest state-dict per run so a late SSE subscriber sees the current
+# state immediately on connect.
+LATEST: dict[str, dict] = {}
+
+MANUAL = ManualStore()
+
+
+class StartRunBody(BaseModel):
+    plan: str
+
+
+class MarkBody(BaseModel):
+    status: Literal["unmarked", "pass", "fail", "blocked"]
+    comment: str = ""
+    failed_steps: list[int] = []
+
+
+class StepMarkBody(BaseModel):
+    status: str
+    note: str = ""
+    agent_status: str | None = None
+
+
+class RunAgentBody(BaseModel):
+    steps: list[int] | None = None
+
+
+class CredentialsBody(BaseModel):
+    username: str = ""
+    password: str = ""
+
+
+class PushBody(BaseModel):
+    mode: Literal["edit", "create"] | None = None
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    logging.basicConfig(
+        level=os.environ.get("LOG_LEVEL", "INFO"),
+        format="%(asctime)s %(levelname)s %(name)s — %(message)s",
+    )
+    yield
+    # cancel any still-running tasks on shutdown
+    for t in TASKS.values():
+        t.cancel()
+
+
+app = FastAPI(title="QA Agent", lifespan=lifespan)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[os.environ.get("FRONTEND_ORIGIN", "http://localhost:5173")],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+@app.middleware("http")
+async def _no_cache_html(request, call_next):
+    """HTML must revalidate on every load — a cached index.html pins the
+    browser to a stale JS bundle. Hash-named assets stay cacheable."""
+    response = await call_next(request)
+    if response.headers.get("content-type", "").startswith("text/html"):
+        response.headers["Cache-Control"] = "no-cache"
+    return response
+
+
+# ---------------------------------------------------------------- run wiring
+
+
+def _make_on_update(run_id: str):
+    """Return a sync callback that fans state updates out to SSE listeners."""
+
+    def on_update(state: RunState) -> None:
+        snapshot = state.to_dict()
+        LATEST[run_id] = snapshot
+        for q in list(LISTENERS.get(run_id, [])):
+            try:
+                q.put_nowait(snapshot)
+            except asyncio.QueueFull:
+                # Drop the frame for slow consumers; they'll catch up on the next.
+                log.warning("SSE listener queue full for run %s — dropping frame", run_id)
+
+    return on_update
+
+
+def _qmetry_configured() -> bool:
+    key = os.environ.get("QMETRY_API_KEY", "")
+    return bool(key) and not key.startswith("REPLACE_WITH")
+
+
+def _qmetry_execution_mode() -> str:
+    """edit (default) writes results into the case's existing execution;
+    create makes a fresh execution run in the same cycle each push."""
+    mode = os.environ.get("QMETRY_EXECUTION_MODE", "edit").strip().lower()
+    return "create" if mode == "create" else "edit"
+
+
+def _make_qmetry_client():
+    """A bare QMetry client for endpoints that aren't case-source shaped."""
+    from agent.qmetry import QMetryClient
+
+    return QMetryClient()
+
+
+def _make_case_source() -> CaseSource:
+    """QMetry when keyed, fixtures otherwise — shared by runs and the manual view."""
+    if _qmetry_configured():
+        from agent.qmetry import QMetryCaseSource
+
+        return QMetryCaseSource()
+    return FixtureCaseSource()
+
+
+def _build_orchestrator(on_update) -> Orchestrator:
+    """Construct the orchestrator with environment-driven defaults."""
+    return Orchestrator(case_source=_make_case_source(), on_update=on_update)
+
+
+async def _run_in_background(run_id: str, plan_key: str, state: RunState) -> None:
+    """Wrap orch.run_plan so exceptions don't crash the task silently."""
+    try:
+        orch = _build_orchestrator(_make_on_update(run_id))
+        # The orchestrator builds its own RunState. We want it to write into the
+        # already-registered state object so RUNS[run_id] stays the same ref.
+        # Easiest: have the orchestrator return a fresh state and replace RUNS[run_id].
+        final = await orch.run_plan(plan_key)
+        RUNS[run_id] = final
+    except Exception:
+        log.exception("Run %s crashed", run_id)
+        # mark blocked so the UI shows something terminal
+        state.finish()
+        _make_on_update(run_id)(state)
+
+
+async def _run_agent_case(
+    run_id: str,
+    plan: str,
+    case_id: str,
+    state: RunState,
+    step_indices: list[int] | None = None,
+) -> None:
+    """Run a single case for the manual view; reflect its result on the mark.
+
+    The completion set_agent calls deliberately omit agent_steps — the sentinel
+    in ManualStore.set_agent preserves the selection recorded at run start.
+    """
+    creds = None
+    session = MANUAL.get(plan)
+    if session is not None:
+        try:
+            mark = session.find_case(case_id).mark
+            if mark.login_username and mark.login_password:
+                creds = (mark.login_username, mark.login_password)
+        except KeyError:
+            pass
+    try:
+        orch = _build_orchestrator(_make_on_update(run_id))
+        final = await orch.run_single_case(
+            case_id, plan_key=plan, step_indices=step_indices, credentials=creds
+        )
+        RUNS[run_id] = final
+        case = next((c for c in final.test_cases if c.id == case_id), None)
+        when = datetime.now().strftime("%Y-%m-%d %H:%M")
+        note = (
+            compose_agent_note(case, run_id, step_indices, when)
+            if case is not None
+            else f"Agent run {when} ({run_id}): case missing from run state"
+        )
+        MANUAL.set_agent(
+            plan, case_id, case.status if case else "blocked", run_id, agent_note=note
+        )
+    except asyncio.CancelledError:
+        log.info("Manual agent run %s cancelled by tester", run_id)
+        state.finish()
+        _make_on_update(run_id)(state)
+        when = datetime.now().strftime("%Y-%m-%d %H:%M")
+        MANUAL.set_agent(
+            plan, case_id, None, run_id,
+            agent_note=f"Agent run {when} ({run_id}): cancelled by tester",
+        )
+        raise
+    except Exception:
+        log.exception("Manual agent run %s crashed", run_id)
+        state.finish()
+        _make_on_update(run_id)(state)
+        when = datetime.now().strftime("%Y-%m-%d %H:%M")
+        MANUAL.set_agent(
+            plan, case_id, "blocked", run_id,
+            agent_note=f"Agent run {when} ({run_id}): crashed — see server log",
+        )
+
+
+# ---------------------------------------------------------------- endpoints
+
+
+@app.get("/config")
+async def get_config() -> dict:
+    """Non-secret frontend bootstrap: which cycle to open by default."""
+    return {"default_cycle": os.environ.get("QMETRY_DEFAULT_CYCLE") or None}
+
+
+@app.get("/cycles")
+async def list_cycles(limit: int = 50) -> dict:
+    """Newest-first QMetry cycles for the picker; empty in fixture mode.
+
+    QMetry exposes no cycle name — entries are {id, key} only.
+    """
+    if not _qmetry_configured():
+        return {"cycles": []}
+    try:
+        cycles = await _make_qmetry_client().list_test_cycles(max_results=limit)
+    except Exception as e:
+        log.exception("Could not list QMetry cycles")
+        raise HTTPException(502, f"Could not list cycles: {e}")
+    return {"cycles": cycles}
+
+
+@app.post("/runs")
+async def start_run(body: StartRunBody) -> dict:
+    """Kick off a plan run; return its run id so the frontend can subscribe."""
+    # Eagerly construct the RunState so the GET endpoint works immediately.
+    # The orchestrator will overwrite RUNS[run_id] with its own state when it
+    # starts producing updates.
+    from agent.run_state import new_run_state
+
+    state = new_run_state(body.plan)
+    RUNS[state.run_id] = state
+    LATEST[state.run_id] = state.to_dict()
+    LISTENERS.setdefault(state.run_id, [])
+
+    task = asyncio.create_task(_run_in_background(state.run_id, body.plan, state))
+    TASKS[state.run_id] = task
+    return {"run_id": state.run_id}
+
+
+@app.get("/runs/{run_id}")
+async def get_run(run_id: str) -> dict:
+    # LATEST holds the live snapshot, updated on every transition via on_update;
+    # RUNS[run_id] is only replaced with the final state when the whole run
+    # finishes. Prefer LATEST so polling reflects live progress instead of the
+    # initial idle state. Fall back to RUNS (and 404) when no snapshot exists.
+    snapshot = LATEST.get(run_id)
+    if snapshot is not None:
+        return snapshot
+    state = RUNS.get(run_id)
+    if state is None:
+        raise HTTPException(404, "Unknown run id")
+    return state.to_dict()
+
+
+@app.post("/runs/{run_id}/cancel")
+async def cancel_run(run_id: str) -> dict:
+    """Cancel a running background task (full plan run or single-case agent run)."""
+    task = TASKS.get(run_id)
+    if task is None or task.done():
+        raise HTTPException(404, "no cancellable run")
+    task.cancel()
+    return {"cancelled": True}
+
+
+@app.post("/runs/{run_id}/push-qmetry")
+async def push_run_to_qmetry(run_id: str, body: PushBody | None = None) -> dict:
+    """Gated: write a finished run's per-step results to QMetry.
+
+    Never automatic — the console/CLI calls this explicitly. 409 unless QMetry
+    is configured and the run is done.
+    """
+    if not _qmetry_configured():
+        raise HTTPException(409, "QMetry is not configured — set QMETRY_API_KEY first")
+    state = RUNS.get(run_id)
+    if state is None:
+        raise HTTPException(404, "Unknown run id")
+    if state.status != "done":
+        raise HTTPException(409, "Run is not finished yet")
+
+    source = _make_case_source()
+    src_cases = {c["id"]: c for c in await source.list_cases(state.plan.key)}
+
+    from agent.qmetry import QMetryClient, QMetryError, write_case_execution
+
+    client = QMetryClient()
+    mode = body.mode if (body and body.mode) else _qmetry_execution_mode()
+    pushed: list[str] = []
+    skipped: list[str] = []
+    errors: list[dict] = []
+    try:
+        for case in state.test_cases:
+            src = src_cases.get(case.id)
+            if src is None or src.get("_qmetry_execution_id") is None:
+                skipped.append(case.id)
+                continue
+            # Positional map: run-tape order == QMetry step-execution order for a
+            # full plan run (this endpoint's use). A partial/filtered run_state
+            # would misalign — the Live UI only pushes full plan runs.
+            step_results = {
+                i: (s.status, s.evaluation)
+                for i, s in enumerate(case.steps)
+                if s.status in ("pass", "fail", "blocked")
+            }
+            try:
+                await write_case_execution(
+                    client,
+                    cycle_id=src.get("_qmetry_cycle_id") or state.plan.key,
+                    execution_id=src["_qmetry_execution_id"],
+                    tc_id=src.get("_qmetry_tc_id") or case.id,
+                    version_no=src.get("_qmetry_version_no", 1),
+                    case_status=case.status,
+                    step_results=step_results,
+                    mode=mode,
+                )
+                pushed.append(case.id)
+            except QMetryError as e:
+                errors.append({"case": case.id, "error": str(e)})
+    finally:
+        aclose = getattr(client, "aclose", None)
+        if aclose is not None:
+            try:
+                await aclose()
+            except Exception:
+                pass
+    return {"pushed": pushed, "skipped": skipped, "errors": errors}
+
+
+@app.get("/manual/{plan}")
+async def get_manual(plan: str) -> dict:
+    """Build (or rebuild) the manual session for a plan and return its state."""
+    source = _make_case_source()
+    try:
+        meta = await source.get_plan(plan)
+        cases = await source.list_cases(plan)
+    except Exception as e:
+        log.exception("Could not load manual plan %s", plan)
+        raise HTTPException(502, f"Could not load plan from source: {e}")
+    session = MANUAL.build(plan, meta.get("name", plan), cases, _qmetry_configured())
+    return session.to_dict()
+
+
+@app.post("/manual/{plan}/cases/{case_id}/mark")
+async def mark_case(plan: str, case_id: str, body: MarkBody) -> dict:
+    """Record a hand mark on a case; returns the updated case dict."""
+    try:
+        case = MANUAL.set_mark(plan, case_id, body.status, body.comment, body.failed_steps)
+    except KeyError as e:
+        raise HTTPException(404, str(e))
+    return case.to_dict()
+
+
+@app.post("/manual/{plan}/cases/{case_id}/steps/{step_index}/mark")
+async def mark_step(plan: str, case_id: str, step_index: int, body: StepMarkBody) -> dict:
+    """Record a hand mark on a single step (pass/fail/blocked/skip).
+
+    A mark that contradicts a non-null `agent_status` is an override — it
+    requires a note and (best-effort) gets appended to the knowledge file so
+    future evaluator runs of this exact step see the tester's ruling.
+    """
+    session = MANUAL.get(plan)
+    if session is None:
+        raise HTTPException(404, f"No manual session for plan {plan!r}; GET it first")
+    try:
+        case = session.find_case(case_id)
+    except KeyError as e:
+        raise HTTPException(404, str(e))
+    if step_index < 0 or step_index >= len(case.steps):
+        raise HTTPException(
+            404, f"step index {step_index} out of range for case {case_id!r}"
+        )
+
+    overrode = bool(body.agent_status) and body.status != body.agent_status
+    if overrode and not body.note.strip():
+        raise HTTPException(422, "override requires a note")
+
+    try:
+        case = MANUAL.set_step_mark(
+            plan, case_id, step_index, body.status, body.note, body.agent_status
+        )
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+
+    if overrode:
+        try:
+            step = case.steps[step_index]
+            record_override(
+                plan,
+                case_id,
+                step_index,
+                step.get("action", ""),
+                step.get("expected", ""),
+                body.agent_status,
+                body.status,
+                body.note,
+                datetime.now().strftime("%Y-%m-%d %H:%M"),
+            )
+        except Exception:
+            log.exception(
+                "Could not record knowledge override for %s/%s step %s",
+                plan, case_id, step_index,
+            )
+
+    return case.to_dict()
+
+
+@app.post("/manual/{plan}/cases/{case_id}/credentials")
+async def set_case_credentials(plan: str, case_id: str, body: CredentialsBody) -> dict:
+    """Per-case login for the agent. Kept separate from /mark so status and
+    note updates never carry credentials. The response and all /manual
+    payloads contain the username only — never the password."""
+    try:
+        case = MANUAL.set_credentials(plan, case_id, body.username, body.password)
+    except KeyError as e:
+        raise HTTPException(404, str(e))
+    return case.to_dict()
+
+
+@app.post("/manual/{plan}/cases/{case_id}/run-agent")
+async def run_agent_for_case(
+    plan: str, case_id: str, body: RunAgentBody | None = None
+) -> dict:
+    """Kick off a single-case agent run for the manual view.
+
+    Optional body {"steps": [0, 1]} limits the run to those step indices;
+    no body runs every step.
+    """
+    from agent.run_state import new_run_state
+
+    steps = body.steps if body is not None else None
+    if steps is not None and len(steps) == 0:
+        raise HTTPException(422, "Select at least one step")
+
+    session = MANUAL.get(plan)
+    if session is None:
+        raise HTTPException(404, f"No manual session for plan {plan!r}; GET it first")
+    try:
+        case = session.find_case(case_id)
+    except KeyError as e:
+        raise HTTPException(404, str(e))
+
+    state = new_run_state(plan, session.plan.name)
+    state.add_case(TestCase(id=case.id, name=case.name))
+    RUNS[state.run_id] = state
+    LATEST[state.run_id] = state.to_dict()
+    LISTENERS.setdefault(state.run_id, [])
+    MANUAL.set_agent(plan, case_id, "running", state.run_id, agent_steps=steps)
+
+    task = asyncio.create_task(
+        _run_agent_case(state.run_id, plan, case_id, state, steps)
+    )
+    TASKS[state.run_id] = task
+    return {"run_id": state.run_id}
+
+
+@app.post("/manual/{plan}/push-qmetry")
+async def push_manual_to_qmetry(plan: str, body: PushBody | None = None) -> dict:
+    """Gated: push marked manual results to the QMetry cycle.
+
+    Skips cases that are unmarked or have no QMetry execution id. Per-case
+    failures are reported, not fatal.
+    """
+    if not _qmetry_configured():
+        raise HTTPException(409, "QMetry is not configured — set QMETRY_API_KEY first")
+
+    session = MANUAL.get(plan)
+    if session is None:
+        raise HTTPException(404, f"No manual session for plan {plan!r}; GET it first")
+
+    marked = [c for c in session.cases if c.mark.status != "unmarked"]
+    if not marked:
+        raise HTTPException(409, "Nothing marked — mark at least one case first")
+
+    from agent.qmetry import QMetryClient, QMetryError, write_case_execution
+
+    client = QMetryClient()
+    mode = body.mode if (body and body.mode) else _qmetry_execution_mode()
+    pushed: list[str] = []
+    skipped: list[str] = []
+    errors: list[dict] = []
+    try:
+        for case in marked:
+            if case.execution_id is None:
+                skipped.append(case.id)
+                continue
+            step_results = {
+                int(i): (sm["status"], sm.get("note") or None)
+                for i, sm in case.mark.step_marks.items()
+                if sm.get("status") in ("pass", "fail", "blocked")
+            }
+            try:
+                await write_case_execution(
+                    client,
+                    cycle_id=case.execution_cycle_id or plan,
+                    execution_id=case.execution_id,
+                    tc_id=case.tc_id or case.id,
+                    version_no=case.version_no,
+                    case_status=case.mark.status,
+                    step_results=step_results,
+                    mode=mode,
+                    comment=compose_comment(case) or None,
+                )
+                MANUAL.mark_pushed(plan, case.id)
+                pushed.append(case.id)
+            except QMetryError as e:
+                errors.append({"case": case.id, "error": str(e)})
+    finally:
+        aclose = getattr(client, "aclose", None)
+        if aclose is not None:
+            try:
+                await aclose()
+            except Exception:
+                pass
+
+    return {"pushed": pushed, "skipped": skipped, "errors": errors}
+
+
+@app.get("/runs/{run_id}/stream")
+async def stream_run(run_id: str):
+    """Server-Sent Events — emits a run_state snapshot on every transition."""
+    if run_id not in RUNS:
+        raise HTTPException(404, "Unknown run id")
+
+    q: asyncio.Queue = asyncio.Queue(maxsize=128)
+    LISTENERS.setdefault(run_id, []).append(q)
+
+    async def _events():
+        try:
+            # First frame: current snapshot so a late subscriber doesn't see an empty UI.
+            yield {"event": "state", "data": json.dumps(LATEST.get(run_id, {}))}
+            while True:
+                snapshot = await q.get()
+                yield {"event": "state", "data": json.dumps(snapshot)}
+                if snapshot.get("status") == "done":
+                    break
+        finally:
+            try:
+                LISTENERS.get(run_id, []).remove(q)
+            except ValueError:
+                pass
+
+    return EventSourceResponse(_events())
+
+
+@app.post("/runs/{run_id}/report")
+async def post_report(run_id: str) -> dict:
+    state = RUNS.get(run_id)
+    if state is None:
+        raise HTTPException(404, "Unknown run id")
+    if state.status != "done":
+        raise HTTPException(409, "Run is not finished yet")
+    # Defer to reporter.py once implemented.
+    from agent.reporter import generate_report
+
+    try:
+        path = generate_report(state)
+    except NotImplementedError:
+        raise HTTPException(501, "Reporter not implemented yet")
+    return {"path": str(path)}
+
+
+@app.post("/runs/{run_id}/log-bugs")
+async def post_log_bugs(run_id: str) -> dict:
+    """Gated: only on a finished run with at least one failure."""
+    state = RUNS.get(run_id)
+    if state is None:
+        raise HTTPException(404, "Unknown run id")
+    if state.status != "done":
+        raise HTTPException(409, "Run must be finished before logging bugs")
+    if state.summary["failed"] == 0:
+        raise HTTPException(409, "No failures to log")
+
+    from agent.jira_client import JiraClient, JiraError, bugs_from_failed_run
+
+    try:
+        jira = JiraClient()
+    except KeyError as e:
+        raise HTTPException(500, f"Jira not configured: missing {e.args[0]}")
+
+    created: list[dict] = []
+    errors: list[str] = []
+    try:
+        for bug in bugs_from_failed_run(state):
+            try:
+                resp = await jira.create_bug(bug["summary"], bug["description"], labels=["qa-agent"])
+                created.append({"key": resp.get("key"), "summary": bug["summary"]})
+            except JiraError as e:
+                errors.append(str(e))
+    finally:
+        await jira.aclose()
+
+    return {"created": created, "errors": errors}
+
+
+# Static frontend (production). Mounted last so /runs/* routes win.
+_DIST = Path(__file__).resolve().parent / "frontend" / "dist"
+if _DIST.exists():
+    app.mount("/", StaticFiles(directory=_DIST, html=True), name="frontend")
+
+
+if __name__ == "__main__":
+    import uvicorn
+
+    # NOTE: reload is OFF on purpose. With --reload, uvicorn runs the app in a
+    # worker process whose event loop is built before the module-level
+    # ProactorEventLoop policy (above) applies — so Playwright's browser
+    # subprocess fails with NotImplementedError and every agent run blocks.
+    # Single-process + app object keeps us on the Proactor loop. Restart the
+    # server by hand after code changes.
+    uvicorn.run(
+        app,
+        host=os.environ.get("SERVER_HOST", "127.0.0.1"),
+        port=int(os.environ.get("SERVER_PORT", "8000")),
+    )

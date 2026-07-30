@@ -1,0 +1,46 @@
+{
+  "plan": {
+    "key": "SOUSCLOUD-TP-45",
+    "name": "Sous Chef Cloud · smoke test"
+  },
+  "cases": [
+    {
+      "id": "IRHS-R-01",
+      "name": "Open account inventory recipe list",
+      "steps": [
+        {
+          "action": "Click Recipe in the left navigation menu",
+          "expected": "The Recipe menu expands and shows sub-items including Edit Inventory"
+        },
+        {
+          "action": "Click Edit Inventory in the Recipe submenu",
+          "expected": "The Account Inventory page loads with a table of recipes showing Recipe Description and Status columns"
+        },
+        {
+          "action": "Fill the Search box with BEANS",
+          "expected": "The inventory table filters to recipes matching BEANS"
+        }
+      ]
+    },
+    {
+      "id": "EQUIP-01",
+      "name": "View equipment list",
+      "steps": [
+        {
+          "action": "Click Equipment in the left navigation menu",
+          "expected": "The Equipment page loads with a table listing equipment with serial numbers and connectivity status"
+        }
+      ]
+    },
+    {
+      "id": "SITES-01",
+      "name": "View sites list",
+      "steps": [
+        {
+          "action": "Click Sites in the left navigation menu",
+          "expected": "The Sites page loads showing the list of sites"
+        }
+      ]
+    }
+  ]
+}

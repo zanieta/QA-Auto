@@ -1,0 +1,525 @@
+"""The main agent loop.
+
+For each test case in a plan:
+  1. fetch detail (CaseSource — fixture today, QMetry later)
+  2. translate each step into Playwright actions (Azure AI)
+  3. open a fresh browser session
+  4. execute each translated action
+  5. screenshot
+  6. evaluate the screenshot against the step's expected result (Azure vision)
+  7. resolve the step in run_state — frontend sees this on the next poll
+  8. close browser
+  9. if FAIL and AUTO_CREATE_BUGS: create a Jira bug (deferred)
+
+Catches every per-case exception so one bad case never kills the run.
+Calls `on_update(state)` after every observable transition so the frontend
+tape updates live.
+"""
+
+from __future__ import annotations
+
+import logging
+import os
+import time
+from typing import Any, Callable
+
+from agent.azure_ai import AzureAIClient, AzureAIError
+from agent.browser import BrowserError, BrowserSession
+from agent.case_source import CaseSource, FixtureCaseSource
+from agent.knowledge import lookup_guidance
+from agent.login import login
+from agent.run_state import RunState, Step, TestCase, new_run_state
+
+log = logging.getLogger(__name__)
+
+# Type aliases
+OnUpdate = Callable[[RunState], None]
+BrowserFactory = Callable[[], BrowserSession]
+
+
+class Orchestrator:
+    def __init__(
+        self,
+        azure: AzureAIClient | None = None,
+        browser_factory: BrowserFactory | None = None,
+        case_source: CaseSource | None = None,
+        jira=None,
+        on_update: OnUpdate | None = None,
+        step_attempts: int | None = None,
+    ):
+        self.azure = azure or AzureAIClient()
+        self.browser_factory = browser_factory or BrowserSession
+        self.case_source = case_source or FixtureCaseSource()
+        self.jira = jira
+        self.on_update = on_update or (lambda _state: None)
+        self.auto_create_bugs = (
+            os.environ.get("AUTO_CREATE_BUGS", "false").lower() == "true"
+        )
+        # Step retry/escalation (2026-07-09): every agent-executed step gets up
+        # to `step_attempts` fresh act->observe+evaluate passes before the
+        # step's final (non-pass) status is escalated for human review.
+        self.step_attempts = (
+            step_attempts if step_attempts is not None
+            else int(os.environ.get("STEP_MAX_ATTEMPTS", "3"))
+        )
+        self.step_attempt_budget_s = float(os.environ.get("STEP_ATTEMPT_BUDGET_S", "150"))
+
+    # ------------------------------------------------------------------ public
+
+    async def run_plan(self, plan_key: str) -> RunState:
+        """Run an entire plan end-to-end. Returns the final RunState."""
+        plan = await self.case_source.get_plan(plan_key)
+        state = new_run_state(plan["key"], plan["name"])
+
+        try:
+            cases = await self.case_source.list_cases(plan_key)
+        except Exception as e:
+            log.exception("Could not load plan %s", plan_key)
+            state.start_run()
+            self.on_update(state)
+            state.finish()
+            self.on_update(state)
+            raise
+
+        # Pre-populate the rail so the tester can see what's coming.
+        for c in cases:
+            state.add_case(TestCase(id=c["id"], name=c["name"]))
+
+        state.start_run()
+        self.on_update(state)
+
+        for case in cases:
+            try:
+                await self._execute_case(state, case)
+            except Exception:
+                log.exception("Case %s crashed; marking blocked", case.get("id"))
+                state.resolve_case(case["id"], "blocked")
+                self.on_update(state)
+
+        state.finish()
+        self.on_update(state)
+        return state
+
+    async def run_single_case(
+        self,
+        case_id: str,
+        plan_key: str = "",
+        dry_run: bool = False,
+        step_indices: list[int] | None = None,
+        credentials: tuple[str, str] | None = None,
+    ) -> RunState:
+        """Run one case (used by `main.py --testcase` and the Manual tab).
+
+        `step_indices` (0-based, original step positions) limits execution to
+        those steps; None runs all. The run-state tape contains only the
+        executed steps.
+
+        `credentials`, if given, overrides the .env login account for this
+        case only (Manual-tab per-case credentials). Never logged, never put
+        in any prompt/context string or run_state — it only reaches
+        `BrowserSession.credentials`, which `login()` reads directly.
+        """
+        cases = await self.case_source.list_cases(plan_key)
+        match = next((c for c in cases if c["id"] == case_id), None)
+        if match is None:
+            raise KeyError(f"No fixture case with id {case_id!r}")
+        plan = await self.case_source.get_plan(plan_key)
+        state = new_run_state(plan["key"], plan["name"])
+        state.add_case(TestCase(id=match["id"], name=match["name"]))
+        state.start_run()
+        self.on_update(state)
+        try:
+            await self._execute_case(
+                state, match, dry_run=dry_run, step_indices=step_indices,
+                credentials=credentials,
+            )
+        finally:
+            state.finish()
+            self.on_update(state)
+        return state
+
+    # ----------------------------------------------------------------- private
+
+    async def _execute_case(
+        self,
+        state: RunState,
+        case: dict[str, Any],
+        dry_run: bool = False,
+        step_indices: list[int] | None = None,
+        credentials: tuple[str, str] | None = None,
+    ) -> None:
+        case_id = case["id"]
+        state.start_case(case_id)
+        self.on_update(state)
+
+        steps = case.get("steps") or []
+        if step_indices is None:
+            selected = list(enumerate(steps))
+        else:
+            selected = [
+                (i, steps[i]) for i in sorted(set(step_indices)) if 0 <= i < len(steps)
+            ]
+        if not selected:
+            state.resolve_case(case_id, "blocked")
+            self.on_update(state)
+            return
+
+        browser = None
+        if not dry_run:
+            browser = self.browser_factory()
+            browser.credentials = credentials
+            try:
+                await browser.open_session()
+                await login(browser)
+            except BrowserError as e:
+                log.error("Login failed for case %s: %s", case_id, e)
+                state.resolve_case(case_id, "blocked")
+                self.on_update(state)
+                return
+            except Exception:
+                log.exception("Could not open browser for case %s", case_id)
+                state.resolve_case(case_id, "blocked")
+                self.on_update(state)
+                return
+
+        # Whole-case brief so the translator understands the flow, not just the
+        # sentence in front of it. Rebuilt each step to carry outcomes so far.
+        selected_set = {i for i, _ in selected}
+        step_status: dict[int, str] = {}
+
+        def _case_brief(current: int) -> str:
+            lines = [f"TEST CASE: {case_id} — {case.get('name', case_id)}", "Steps:"]
+            for i, s in enumerate(steps):
+                text = " ".join(str(s.get("action", "")).split())[:120]
+                if i == current:
+                    marker = ">> CURRENT — execute ONLY this step now"
+                elif i in step_status:
+                    marker = f"done: {step_status[i]}"
+                elif i in selected_set:
+                    marker = "upcoming (do not do it yet)"
+                else:
+                    marker = "MANUAL — the tester does this one by hand; skip it"
+                lines.append(f"  {i + 1}. {text}  [{marker}]")
+            return "\n".join(lines)
+
+        outcome: str = "pass"
+        try:
+            # tape_index (position in the executed sequence) is what resolve_step
+            # indexes — NOT the original step number, which differs when filtering.
+            # A fail/blocked step records and the case CONTINUES: each step
+            # re-plans from the live page (RECONCILE), and a step whose
+            # prerequisite truly broke fails/blocks on its own evidence.
+            for tape_index, (orig_index, step) in enumerate(selected):
+                step_outcome = await self._execute_step(
+                    state, case_id, tape_index, step, browser, dry_run=dry_run,
+                    case_context=_case_brief(orig_index), orig_index=orig_index,
+                )
+                step_status[orig_index] = step_outcome
+                if step_outcome == "fail":
+                    outcome = "fail"
+                elif step_outcome == "blocked" and outcome != "fail":
+                    outcome = "blocked"
+        finally:
+            if browser is not None:
+                try:
+                    await browser.close_session()
+                except Exception:
+                    log.warning("Failed to close browser cleanly for case %s", case_id)
+
+        state.resolve_case(case_id, outcome)
+        self.on_update(state)
+
+        if outcome == "fail" and self.auto_create_bugs and self.jira is not None:
+            try:
+                await self._create_bug(state, case_id)
+            except Exception:
+                log.exception("Failed to create Jira bug for %s", case_id)
+
+    async def _execute_step(
+        self,
+        state: RunState,
+        case_id: str,
+        step_index: int,
+        step: dict[str, Any],
+        browser: BrowserSession | None,
+        dry_run: bool = False,
+        case_context: str = "",
+        orig_index: int | None = None,
+    ) -> str:
+        """Run one step. Returns 'pass' | 'fail' | 'blocked'.
+
+        Live mode: snapshot the page, translate against its real elements, execute.
+        On a BrowserError, re-snapshot + re-translate (telling the model what failed)
+        and retry the step ONCE before marking it FAIL — that heal-retry happens
+        *within* a single attempt's act->observe loop (`_attempt_step`).
+
+        On top of that, the whole attempt (act->observe loop + screenshot/evaluate)
+        runs up to `self.step_attempts` times (2026-07-09 retry-escalation spec).
+        Attempts after the first tell the translator what the previous attempt's
+        verdict was and push it to interact with the specific controls the step
+        names rather than stop at the page. `run_state.resolve_step` fires exactly
+        once for the step — on a pass, or on the final attempt — every attempt in
+        between only updates `rs_step.detail` live. If the final attempt still
+        isn't a pass, its stored evaluation gains a "NEEDS HUMAN REVIEW" suffix.
+
+        `orig_index` is the step's ORIGINAL position in the case (differs from
+        `step_index`/tape position when `step_indices` filters the run) — it's
+        the key used to look up tester-guidance knowledge for this exact step.
+        `step_index` keeps indexing the run_state tape unchanged.
+        """
+        if orig_index is None:
+            orig_index = step_index
+        action_text = step["action"]
+        expected = step.get("expected", "")
+
+        rs_step = Step(action=action_text, detail="translating…", status="running")
+        state.add_step(case_id, rs_step)
+        self.on_update(state)
+        start = time.monotonic()
+
+        # --- dry-run: translate only, no browser -----------------------------
+        if dry_run:
+            try:
+                dry_ctx = f"{case_context}\ndry-run mode" if case_context else "dry-run mode"
+                actions = await self.azure.translate_step(action_text, app_context=dry_ctx)
+            except AzureAIError as e:
+                duration = time.monotonic() - start
+                state.resolve_step(case_id, step_index, "blocked",
+                                   f"Could not translate step: {e}", duration)
+                self.on_update(state)
+                return "blocked"
+            rs_step.detail = _format_detail(actions)
+            duration = time.monotonic() - start
+            state.resolve_step(case_id, step_index, "pass",
+                               "[dry-run] translation OK — browser execution skipped", duration)
+            self.on_update(state)
+            return "pass"
+
+        # --- live: attempt loop -------------------------------------------------
+        attempts_max = self.step_attempts
+        prev_verdict: tuple[str, str] | None = None
+
+        for attempt in range(1, attempts_max + 1):
+            escalation = ""
+            if prev_verdict is not None:
+                prev_status, prev_reason = prev_verdict
+                escalation = (
+                    f"ATTEMPT {attempt} of {attempts_max} — the previous attempt "
+                    f"was judged {prev_status}: {prev_reason}. Do not stop at the "
+                    "page the step names: interact with the specific CONTROLS it "
+                    "names in the PLACE it names them (row action icons like the "
+                    "pencil, buttons inside panels, checkboxes in edit forms) "
+                    "before concluding."
+                )
+
+            status, reason, png_b64 = await self._attempt_step(
+                state, rs_step, case_id, orig_index, action_text, expected, browser,
+                case_context=case_context, escalation=escalation,
+            )
+
+            is_last = attempt == attempts_max
+            if status == "pass" or is_last:
+                final_reason = reason
+                if status != "pass":
+                    final_reason = (
+                        f"{reason} — NEEDS HUMAN REVIEW ({attempts_max} agent attempts)"
+                    )
+                duration = time.monotonic() - start
+                state.resolve_step(case_id, step_index, status, final_reason, duration,
+                                   screenshot_b64=png_b64)
+                self.on_update(state)
+                return status
+
+            # Not a pass, and more attempts remain — surface progress, then retry.
+            rs_step.detail = f"attempt {attempt}/{attempts_max}: {rs_step.detail}"
+            self.on_update(state)
+            prev_verdict = (status, reason)
+
+        # Unreachable: attempts_max >= 1 always returns from inside the loop above.
+        raise AssertionError("step attempt loop exited without resolving the step")
+
+    async def _attempt_step(
+        self,
+        state: RunState,
+        rs_step: Step,
+        case_id: str,
+        orig_index: int,
+        action_text: str,
+        expected: str,
+        browser: BrowserSession,
+        case_context: str,
+        escalation: str,
+    ) -> tuple[str, str, str | None]:
+        """Run ONE attempt: the act -> observe loop, then screenshot + evaluate.
+
+        Returns `(status, reason, screenshot_b64)`. `status` is one of
+        'pass' | 'fail' | 'blocked'. `screenshot_b64` is the final frame when
+        evaluation was reached, else None (translate failure or an action
+        failure with nothing yet executed — same "no evidence" cases the old
+        single-attempt code returned immediately on).
+
+        A navigation stales every ref from the snapshot, so after any action
+        that changes the page URL we re-observe (fresh snapshot) and let the
+        model plan the remainder with a PROGRESS log. Single-page plans keep
+        the old fast path: one round, no extra model calls. The model stops
+        the loop by returning {"actions": [], "done": true}.
+
+        Time budget: checked between rounds only (never interrupts a round in
+        flight) — if this attempt has run longer than `step_attempt_budget_s`
+        AND the previous round executed no actions, the loop stops and goes
+        to evaluation on whatever evidence exists so far.
+        """
+        max_rounds = 6
+        max_actions = 20
+        frames: list[str] = []
+        executed_actions: list[dict[str, Any]] = []
+        last_error: str | None = None
+        consecutive_error_rounds = 0
+        attempt_start = time.monotonic()
+        prev_round_had_actions = True  # no "previous round" yet — round 0 always runs
+
+        for _round in range(max_rounds):
+            if _round > 0 and not prev_round_had_actions:
+                if (time.monotonic() - attempt_start) > self.step_attempt_budget_s:
+                    break  # budget exhausted and nothing is "ongoing" — judge now
+
+            actions_before = len(executed_actions)
+
+            try:
+                elements = await browser.snapshot_elements()
+            except Exception:
+                elements = []
+
+            context = f"current URL: {await browser.current_url()}"
+            if expected:
+                context = (
+                    "CURRENT step EXPECTED RESULT (for RECONCILE-FIRST state "
+                    "checks; verification itself happens later from "
+                    "screenshots):\n"
+                    f"{expected}\n{context}"
+                )
+            if case_context:
+                context = f"{case_context}\n{context}"
+            if executed_actions:
+                progress = "\n".join(
+                    f"  {i + 1}. {_format_detail([a])}"
+                    for i, a in enumerate(executed_actions)
+                )
+                context += (
+                    "\nPROGRESS — actions already performed for the CURRENT step"
+                    " (possibly on earlier pages):\n" + progress
+                )
+            if last_error:
+                context += (
+                    f"\nPrevious action failed: {last_error}. "
+                    "Pick a different element or approach."
+                )
+            if escalation:
+                context = f"{escalation}\n{context}"
+
+            try:
+                actions = await self.azure.translate_step(
+                    action_text, app_context=context, elements=elements
+                )
+            except AzureAIError as e:
+                if executed_actions:
+                    break  # judge on the evidence gathered so far
+                return "blocked", f"Could not translate step: {e}", None
+
+            if not actions:
+                break  # model signals the step's goal is complete
+
+            rs_step.detail = _format_detail(executed_actions + actions)
+            self.on_update(state)
+
+            last_error = None
+            navigated = False
+            for i, a in enumerate(actions):
+                if len(executed_actions) >= max_actions:
+                    break
+                url_before = await browser.current_url()
+                try:
+                    await browser.execute_action(a)
+                except BrowserError as e:
+                    last_error = str(e)
+                    break
+                executed_actions.append(a)
+                rs_step.detail = _format_detail(executed_actions)
+                self.on_update(state)
+                try:
+                    navigated = (await browser.current_url()) != url_before
+                except Exception:
+                    navigated = False
+                # Capture the transient state after every action except a
+                # same-page plan's last one — the settled final screenshot
+                # below covers the step's end state.
+                if navigated or i < len(actions) - 1:
+                    try:
+                        await browser.wait_for_settle(quiet_ms=400, timeout_ms=3_000)
+                        frames.append(await browser.screenshot())
+                    except Exception:
+                        pass  # a lost frame never fails the step
+                if navigated:
+                    break  # refs are stale — re-observe the new page
+
+            prev_round_had_actions = len(executed_actions) > actions_before
+
+            if last_error is not None:
+                consecutive_error_rounds += 1
+                if consecutive_error_rounds >= 2:
+                    if not executed_actions:
+                        return "fail", last_error, None
+                    break  # persistent errors — judge on the evidence gathered
+                continue  # re-observe with the error in context
+            consecutive_error_rounds = 0
+
+            if len(executed_actions) >= max_actions:
+                break
+            if not navigated:
+                break  # whole plan ran on one page — step complete (fast path)
+
+        # --- screenshot + evaluate --------------------------------------------
+        try:
+            # Let animations/network settle so the final frame shows the final UI.
+            await browser.wait_for_settle()
+            png_b64 = await browser.screenshot()
+            frames.append(png_b64)
+            # A knowledge-lookup problem must never affect a run — degrade to
+            # no guidance rather than fail the step.
+            try:
+                guidance = lookup_guidance(case_id, orig_index, action_text)
+            except Exception:
+                log.warning("lookup_guidance failed for %s/%s", case_id, orig_index, exc_info=True)
+                guidance = ""
+            # Cap what we send the evaluator; always keep the final frame.
+            evaluation = await self.azure.evaluate_result(
+                frames[-8:], expected,
+                performed=_format_detail(executed_actions),
+                step_text=action_text,
+                guidance=guidance,
+            )
+        except (BrowserError, AzureAIError) as e:
+            return "fail", f"Could not evaluate result: {e}", None
+
+        status = evaluation["status"]
+        if status not in ("pass", "fail", "blocked"):
+            status = "fail"
+        return status, evaluation["reason"], png_b64
+
+    async def _create_bug(self, state: RunState, case_id: str) -> None:
+        """Stub — wire up once jira_client is implemented."""
+        log.info("AUTO_CREATE_BUGS=true but jira_client is not wired yet")
+
+
+def _format_detail(actions: list[dict[str, Any]]) -> str:
+    """Join translated actions into a one-line mono detail string."""
+    parts: list[str] = []
+    for a in actions:
+        act = a.get("action", "?")
+        sel = a.get("selector") or ""
+        val = a.get("value")
+        if val:
+            parts.append(f"{act} {sel} {val!r}".strip())
+        else:
+            parts.append(f"{act} {sel}".strip())
+    return "; ".join(parts)

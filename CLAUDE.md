@@ -1,0 +1,469 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+This project is a QA automation agent **plus a live web console** for Duke
+Manufacturing's Sous Chef Cloud testing.
+
+The agent:
+1. Reads test cases from QMetry (REST API)
+2. Translates plain-English test steps to Playwright browser actions using Azure AI (GPT-4o)
+3. Executes those steps against Sous Chef Cloud
+4. Evaluates screenshots against expected results using GPT-4o vision
+5. Writes PASS/FAIL/BLOCKED results back to QMetry
+6. Auto-creates Jira bugs for failed test cases (gated — see below)
+
+The console (frontend) is a real-time view over a run: a tester picks a plan,
+presses Run, and watches each test case execute step-by-step. **The frontend design
+is fully specified in `FRONTEND.md` — read that file before building or changing any
+UI. Do not invent a different design.**
+
+---
+
+## Claude Code model policy
+
+Route by task difficulty; keep the top model in the main loop for judgment and
+delegate execution to cheaper tiers:
+
+- **Haiku 4.5** — trivial mechanical work: bulk edits, formatting, running known
+  commands, obvious one-line fixes.
+- **Sonnet 5** — default implementation: real code, straightforward features,
+  routine debugging with a known cause. Dispatch as subagents (`model: "sonnet"`
+  on Agent/Workflow calls).
+- **Opus 4.8+** — planning, architecture calls, hard/unknown-cause debugging,
+  code review, brainstorming, analysis.
+
+**Override by difficulty:** an easy step inside a hard task can drop a tier; a
+hard step inside an easy task climbs one — route the step, not the label
+("coding"). Integration-touching or cross-cutting reviews go to Opus, not Sonnet.
+
+**Enforcement pattern:** Opus is the main orchestrator, delegating substantial
+coding to Sonnet subagents — but does small, fully-specified edits (sub-~10 lines)
+inline rather than paying subagent dispatch overhead.
+
+**Fable 5** is unevaluated for this split (open item); until measured, treat it
+as an Opus-tier main-loop model.
+
+---
+
+## Two parts, one repo
+
+```
+qa-agent/
+├── CLAUDE.md                   ← you are here (backend + how it serves the frontend)
+├── FRONTEND.md                 ← the frontend design system + component spec (authoritative for UI)
+├── .env                        ← secrets (never commit)
+├── .env.example
+├── requirements.txt
+│
+├── main.py                     ← CLI entry point — run a plan headless
+├── server.py                   ← FastAPI server — starts runs + serves run state to the frontend
+│
+├── .venv/                      ← Python 3.14 virtualenv (gitignored)
+│
+├── agent/                      ← the backend agent (Python, async)
+│   ├── __init__.py
+│   ├── orchestrator.py         ← main agent loop; writes run_state after every step
+│   ├── run_state.py            ← the RunState model + JSON serialization (shared with frontend)
+│   ├── case_source.py          ← CaseSource protocol + FixtureCaseSource (decouples orchestrator from QMetry)
+│   ├── qmetry.py               ← QMetry API client (LIVE — works against qtmcloud.qmetry.com)
+│   ├── jira_client.py          ← Jira API client + bugs_from_failed_run helper
+│   ├── azure_ai.py             ← Azure AI (GPT-4o) client
+│   ├── browser.py              ← Playwright execution engine
+│   └── reporter.py             ← HTML summary report generator
+│
+├── prompts/
+│   ├── step_translator.txt     ← English step → Playwright action JSON
+│   └── result_evaluator.txt    ← screenshot + expected → PASS/FAIL JSON
+│
+├── frontend/                   ← the console UI (see FRONTEND.md for everything)
+│   ├── public/
+│   │   ├── duke-logo.png
+│   │   └── fixtures/sample_run_state.json   ← Vite serves this at /fixtures/* in dev mode
+│   └── src/…                   ← React + Vite app; talks ONLY to server.py
+│
+├── tests/                      ← pytest; httpx + Playwright Page mocked
+│   ├── test_qmetry.py          test_azure_ai.py    test_browser.py
+│   ├── test_jira_client.py     test_orchestrator.py test_reporter.py
+│   ├── test_run_state.py       ← asserts JSON shape matches FRONTEND.md + fixture parity
+│   └── test_server.py
+│
+├── fixtures/
+│   ├── sample_plan.json        ← orchestrator INPUT — read by FixtureCaseSource
+│   ├── sample_test_case.json   ← one test case in QMetry's source shape (reference)
+│   └── sample_run_state.json   ← orchestrator OUTPUT — lets the frontend work pre-backend
+│
+├── scripts/
+│   └── qmetry_probe.py         ← dev tool for discovering QMetry endpoint shape
+│
+└── reports/
+    └── .gitkeep                ← reporter writes run_<ts>.html here
+```
+
+---
+
+## Environment variables
+
+All secrets in `.env`. Never hardcode. Never commit `.env`. The frontend gets NO
+secrets — it only talks to `server.py`, which holds all credentials server-side.
+
+```
+# Azure AI
+AZURE_AI_ENDPOINT=https://<your-project>.openai.azure.com/
+AZURE_AI_API_KEY=<your-azure-ai-key>
+AZURE_AI_DEPLOYMENT=gpt-4o
+AZURE_AI_TRANSLATOR_DEPLOYMENT=   # optional; cheap text model for step translation
+AZURE_AI_EVALUATOR_DEPLOYMENT=    # optional; vision model for screenshot evaluation
+                                  # both fall back to AZURE_AI_DEPLOYMENT
+
+# QMetry
+QMETRY_BASE_URL=https://dukemanufacturing.atlassian.net
+QMETRY_API_KEY=<your-qmetry-api-key>
+
+# Jira (Atlassian)
+JIRA_BASE_URL=https://dukemanufacturing.atlassian.net
+JIRA_EMAIL=<your-atlassian-email>
+JIRA_API_TOKEN=<your-atlassian-api-token>
+JIRA_PROJECT_KEY=SOUSCLOUD
+JIRA_BUG_ISSUE_TYPE=Bug
+
+# Target app
+APP_BASE_URL=https://<sous-chef-cloud-uat-url>
+APP_USERNAME=<test-user-email>
+APP_PASSWORD=<test-user-password>
+
+# Server
+SERVER_HOST=127.0.0.1
+SERVER_PORT=8000
+FRONTEND_ORIGIN=http://localhost:5173   # for CORS
+
+# Behaviour flags
+HEADLESS=true
+SCREENSHOT_ON_PASS=false
+AUTO_CREATE_BUGS=false          # START false; enable only after a verified run
+RUN_MODE=continue               # continue | stop_on_fail
+LOG_LEVEL=INFO
+```
+
+---
+
+## The shared contract: run_state.json
+
+This is the single most important interface in the project. The backend produces it;
+the frontend consumes it. **The shape is defined in FRONTEND.md under "How the
+frontend connects to the agent" and must match exactly.** `agent/run_state.py`
+owns this model; `test_run_state.py` asserts the serialized shape.
+
+The orchestrator updates run state after **every step** so the frontend tape updates
+in near-real-time. Step status values: `running | pass | fail | blocked`. Test case
+status values: `queued | running | pass | fail | blocked`. Run status: `idle |
+running | done`.
+
+If you change the run_state shape, you MUST update FRONTEND.md and the frontend
+hook in the same change. They are one contract.
+
+---
+
+## Backend commands
+
+The Python env lives in `.venv/` at the repo root (Python 3.14). Always invoke it
+via `.venv/Scripts/python.exe` (Windows) so you don't accidentally pick up a
+system Python. The venv's `pip.ini` and `frontend/.npmrc` already bypass Duke's
+corporate SSL inspection — don't add `--trusted-host` / `--strict-ssl=false`
+flags by hand.
+
+```powershell
+# First-time install (or after editing requirements.txt)
+.venv\Scripts\python.exe -m pip install -r requirements.txt
+.venv\Scripts\python.exe -m playwright install chromium
+
+# Run a plan headless from the CLI (no frontend)
+.venv\Scripts\python.exe main.py --plan SOUSCLOUD-TP-45
+
+# Single case / dry run for debugging
+.venv\Scripts\python.exe main.py --testcase IRHS-R-01 --dry-run
+$env:HEADLESS="false"; .venv\Scripts\python.exe main.py --testcase IRHS-R-01
+
+# Start the server (frontend talks to this)
+.venv\Scripts\python.exe server.py     # SERVER_PORT, exposes run API + run_state
+
+# Tests
+.venv\Scripts\python.exe -m pytest tests/ -q                                 # full suite
+.venv\Scripts\python.exe -m pytest tests/test_orchestrator.py -v             # one module
+.venv\Scripts\python.exe -m pytest tests/test_azure_ai.py::test_retries_on_429_then_succeeds -v   # one test
+```
+
+Tests use mocked httpx + a mocked Playwright Page — they never hit the network or
+launch Chromium. A green suite is not proof that real Azure / Playwright work;
+that's what `main.py --dry-run` is for.
+
+---
+
+## Frontend commands
+
+```bash
+cd frontend
+npm install
+npm run dev        # Vite dev server on :5173, proxies API calls to server.py on :8000
+npm run build      # production build → frontend/dist
+```
+
+For local dev: run `python server.py` in one terminal and `npm run dev` in another.
+The Vite dev server proxies `/runs/*` to the backend so there are no CORS issues in
+dev. In production, `server.py` serves the built `frontend/dist` as static files.
+
+---
+
+## Backend modules — what each does
+
+### agent/run_state.py
+Defines the `RunState` model and its `.to_dict()` → JSON matching FRONTEND.md
+exactly. Single source of truth for the frontend contract. Helpers: `start_run()`,
+`start_case(id)`, `add_step(...)`, `resolve_step(status, evaluation, duration)`,
+`resolve_case(status)`, `finish()`. The orchestrator calls these; the server
+serializes current state on each request.
+
+### agent/manual_state.py
+The Manual-tab contract. `ManualStore` holds per-case hand marks
+(pass/fail/blocked + note + flagged failing steps + any per-case agent run),
+keyed by plan and snapshotted to `manual_sessions/<plan>.json`. `ManualSession`
+serializes to the shape in FRONTEND.md's "Manual session state". `compose_comment`
+builds the QMetry comment from the note + flagged steps. The QMetry execution id is
+held server-side only.
+
+### agent/case_source.py
+The seam between the orchestrator and where test plans come from. Defines a
+`CaseSource` protocol (`get_plan`, `list_cases`) and ships one implementation,
+`FixtureCaseSource`, which reads `fixtures/sample_plan.json`. The orchestrator
+takes a `CaseSource` in its constructor — never a `QMetryClient` directly — so
+swapping fixtures for QMetry is a one-line change in `server.py` once the QMetry
+shape is known.
+
+### agent/qmetry.py
+QMetry REST API client. **Status: implemented and working against the LIVE API**
+(verified 2026-06-30 against cycle `1ZwYH2ObF7AGZa` / `SOUSCLOUD-TR-482`).
+- **Host:** `https://qtmcloud.qmetry.com`, base `/rest/api/latest` (NOT
+  `dukemanufacturing.atlassian.net`, NOT `/rest/qtm4j/v2`).
+- **Auth:** `apiKey: <key>` request header (from QMetry → Configuration → Open API).
+- Real response shapes (these differ from the published spec — they were
+  reverse-engineered from live calls):
+  - `get_test_cycle` → cycle is wrapped under `data`; there is no cycle name field.
+  - `search_test_cases` → body must be `{"filter": {}}`; rows carry
+    `testCaseExecutionId` + `versionNo` (no `summary`).
+  - case name comes from `GET /testcases/{id}/versions/{no}` → `data.summary`.
+  - `get_test_steps` → body `{}`; some steps are *shareable* (real steps nested
+    under `shareable.shareableTestSteps`) and are flattened by `_load_steps`.
+  - `post_execution_result` → PUT to `/testcycles/{internal cycle id}/...` (the
+    `data.id`, NOT the plan key).
+`QMetryCaseSource` wraps the client; `server.py` auto-selects it when
+`QMETRY_API_KEY` is set (and isn't the `REPLACE_WITH…` placeholder), else
+`FixtureCaseSource`.
+
+### agent/jira_client.py
+Jira REST API v3. Basic Auth = base64(`email:api_token`). Methods: `create_bug`,
+`add_comment`, `attach_file`. Only called when AUTO_CREATE_BUGS=true OR the frontend
+"Log failures to Jira" button fires `POST /runs/{id}/log-bugs`.
+
+### agent/azure_ai.py
+Azure OpenAI GPT-4o wrapper. Methods: `translate_step(step_text, app_context)` →
+list of `{action, selector, value}`; `evaluate_result(screenshot_b64, expected)` →
+`{status, reason}`. Prompts load from `/prompts/` — never inline them. Vision input
+goes as a base64 `image_url` content block. `translate_step` takes the page element snapshot and biases output to choose a
+target by `ref`. The orchestrator snapshots before translating and re-snapshots +
+re-translates + retries a step once on a browser action failure (DOM-grounded
+actions — see the 2026-06-30 spec).
+
+### agent/browser.py
+Playwright async wrapper. Methods: `open_session`, `execute_action`, `screenshot`
+(returns base64 PNG), `close_session`. Supported actions: `navigate, click, fill,
+select, wait, assert_text, assert_visible, login, logout` (`login`/`logout` are
+harness-executed: credentials and session mechanics never reach the model;
+`logout` clears cookies and lands on the login page — used when a step expects
+a logged-out state, see the RECONCILE rule in `prompts/step_translator.txt`
+and the 2026-07-07 spec). Always close the session in a finally
+block. `snapshot_elements()` tags visible interactive elements with `data-agent-ref` and
+returns `{ref, tag, role, name}`; actions may carry a `ref` (resolved to
+`[data-agent-ref="…"]`) so the model targets real elements instead of guessing CSS.
+
+### agent/orchestrator.py
+The main loop. Per test case: fetch detail → translate each step → open browser →
+execute + screenshot each step → evaluate → resolve step in run_state → post to
+QMetry → (if fail and bugs enabled) create Jira bug → close browser. Updates
+run_state after every step so the frontend stays live. Catches all per-case
+exceptions so one bad case never kills the run.
+
+### agent/reporter.py
+After a run, generates `reports/run_<timestamp>_<run_id>.html`: self-contained HTML
+(inline CSS, Duke navy palette) with totals + per-case table showing status,
+detail, evaluation reason, and per-step duration. v1 does **not** include
+screenshot thumbnails — run_state doesn't carry screenshots yet. To add: store
+PNG bytes on `Step`, render as a data-URL `<img>` in the per-step row.
+
+### server.py
+FastAPI app. Endpoints (exactly what the frontend calls — see FRONTEND.md):
+- `POST /runs` `{ "plan": "SOUSCLOUD-TP-45" }` → starts a run in a background task,
+  returns `{ "run_id": ... }`.
+- `GET /runs/{id}` → current run_state JSON.
+- `GET /runs/{id}/stream` → SSE stream of step/status events (Mode B).
+- `POST /runs/{id}/report` → generate HTML report, return its path/url.
+- `POST /runs/{id}/log-bugs` → create Jira bugs for failed cases. Gated action —
+  only succeeds on a finished run that has failures.
+- `GET /manual/{plan}` → manual session state.
+- `POST /manual/{plan}/cases/{id}/mark` → record a hand mark.
+- `POST /manual/{plan}/cases/{id}/run-agent` → run one case with the agent.
+- `POST /manual/{plan}/push-qmetry` → gated push of manual results to QMetry.
+- Serves `frontend/dist` as static files in production.
+CORS: allow only `FRONTEND_ORIGIN`.
+
+---
+
+## Frontend build rules
+
+**Read FRONTEND.md first and follow it exactly.** It specifies the Duke navy token
+system, the DM Mono / Inter type split, the two-panel layout, every component, the
+copy voice, and the run_state contract. Key non-negotiables:
+
+- Duke navy (`#1B2A6B`) is the brand color. Rail is navy; primary buttons are navy.
+- The **execution tape is the signature** — steps stream in with a spinner, resolve
+  to pass/fail with the AI evaluation beneath. Do not replace it with a static table
+  or a grid of cards.
+- DM Mono for machine output (IDs, selectors, timings), Inter for human-readable text.
+- The "Log failures to Jira" button is **gated**: disabled during a run and when
+  there are zero failures. The frontend must never let it fire otherwise — the
+  backend also enforces this, but the UI gate is part of the design.
+- The frontend talks ONLY to `server.py`. It never holds credentials and never calls
+  QMetry / Jira / Azure directly.
+- No CSS framework, no browser storage, responsive to mobile, keyboard focus visible,
+  `prefers-reduced-motion` respected.
+
+Use the Duke logo asset at `frontend/public/duke-logo.png`. If it's not present yet,
+use the white-shield-with-"Duke"-wordmark placeholder described in FRONTEND.md.
+
+---
+
+## Error handling rules (backend)
+
+- All API calls wrapped in try/except with retry (max 3, exponential backoff).
+- Test case with no steps → BLOCKED, reason "No steps defined".
+- Azure AI returns invalid JSON → retry once → else BLOCKED.
+- Playwright throws on an action → capture exception as failure reason, screenshot,
+  mark step FAIL.
+- App shows login page mid-test → BLOCKED (session expired).
+- One case crashing must never kill the run — catch per case, record BLOCKED, continue.
+- Every error logged before continuing (use `logging`, not print).
+
+---
+
+## Code style
+
+- Backend: Python 3.11+, async throughout, `httpx` for async HTTP, type hints,
+  docstrings, config from env via `python-dotenv`, `logging` not print.
+- Frontend: see FRONTEND.md. React functional components + hooks, or plain HTML/JS.
+  Hand-written CSS from the token system. No framework defaults.
+
+---
+
+## Things NOT to do
+
+- Do not put any credential in the frontend or in any browser-visible code.
+- Do not let the frontend call QMetry / Jira / Azure directly — always via server.py.
+- Do not hardcode plan IDs, project keys, or URLs — env or request args only.
+- Do not commit `.env`.
+- Do not redesign the UI away from FRONTEND.md. If a real constraint forces a change,
+  update FRONTEND.md in the same change and say what changed and why.
+- Do not change the run_state shape without updating FRONTEND.md and the frontend hook.
+
+---
+
+## Current state of play
+
+The agent loop, server, reporter, and Jira client are implemented and unit-tested
+against mocks. `pytest tests/ -q` passes (73 tests). The frontend is wired and
+renders against `fixtures/sample_run_state.json` until a real run id exists.
+
+**Already done:** scaffold; `agent/run_state.py`; `agent/azure_ai.py`; `agent/browser.py`;
+`agent/orchestrator.py`; `agent/case_source.py` with `FixtureCaseSource`;
+`agent/reporter.py`; `agent/jira_client.py`; `server.py` (all five endpoints
+including SSE); frontend; the test suite.
+
+**Open work, in order:**
+
+1. ~~Drop missing values into `.env`~~ **DONE (2026-07-02).** All values filled and
+   verified live.
+2. ~~Decide and build the Sous Chef Cloud login flow~~ **DONE.** `agent/login.py`
+   form-fills email/password (no SSO), waits on `wait_until="commit"` +
+   element selectors (legacy pages stall DOMContentLoaded), and dismisses the
+   cookie-consent banner both before and after login.
+3. ~~Capture the real QMetry endpoint shape~~ **DONE (2026-06-30).** `agent/qmetry.py`
+   + `QMetryCaseSource` work against the live API; `server.py` auto-selects it when
+   `QMETRY_API_KEY` is set. The **Manual + Agent test view** (new) consumes it — see
+   `agent/manual_state.py` and the `/manual/*` endpoints. Open the Manual tab at
+   `http://localhost:5173/?cycle=<idOrKey>` (e.g. `?cycle=1ZwYH2ObF7AGZa`).
+4. **Rotate the QMetry API key** — keys have been pasted into chat transcripts
+   (2026-06-17 and 2026-06-30). The one currently in `.env` works but is exposed.
+5. **CLI end-to-end: DONE (2026-07-02).** `main.py --plan SOUSCLOUD-TP-45` passes
+   3/3 live against test.souscheftech.com (~82s) and writes the HTML report.
+   Three fixes made it pass: `BrowserSession.wait_for_settle()` before every
+   screenshot (networkidle ≤15s + 800ms — animations and slow server-side
+   navigations otherwise get screenshotted mid-flight); a translator-prompt rule
+   that PAGE ELEMENTS are already visible so never click a parent menu to reveal
+   a listed element (the Recipe toggle was collapsing the open submenu); and the
+   post-login cookie-banner dismissal. **Frontend e2e also verified same day**
+   (Live run + Manual tab against cycle `1ZwYH2ObF7AGZa`).
+6. **Only after the above works:** flip `AUTO_CREATE_BUGS=true` for a full plan
+   run.
+
+**2026-07-02 (evening) additions — all live and tested (135 tests):**
+- Both AI roles moved to the `gpt-5.4-mini` deployment
+  (`AZURE_AI_TRANSLATOR_DEPLOYMENT` / `AZURE_AI_EVALUATOR_DEPLOYMENT`, fall back
+  to `AZURE_AI_DEPLOYMENT`; client auto-drops `temperature` for reasoning models).
+- **Step-selection agent runs** (Manual tab): per-step "agent" checkboxes,
+  optional `{"steps": [...]}` body on run-agent, `agent_steps` on the manual
+  mark, hint chips. Spec/plan under `docs/superpowers/`.
+- **`login` browser action**: the model requests it, the harness executes it
+  with `.env` credentials — the model never sees credentials.
+- **QMetry step-text cleaning** (`clean_step_text` in `agent/qmetry.py`) +
+  `testData` included in step actions.
+- `QMETRY_DEFAULT_CYCLE` + `GET /config`: the console opens on the real cycle.
+- Server watchdog: `scripts/serve.cmd` (start manually after reboot, or register
+  the "SousChef QA Console" scheduled task).
+- **Known blockers:** TC-1985/1987/2211 need their `[~id]` menu references
+  rewritten as plain text IN QMETRY; TC-2 step 3 (accordion sidebar) is
+  un-verifiable with one screenshot — proposed per-action screenshots feature is
+  designed but awaiting approval.
+
+**2026-07-07/08 additions — all live, 185 tests:**
+- `logout` browser action + RECONCILE-FIRST translator rule; the translator
+  receives the step's EXPECTED RESULT; the evaluator receives PERFORMED
+  ACTIONS + STEP INSTRUCTION and must fill a `waived` JSON field for
+  conditional "If available…" clauses (absent feature = waived = pass, never
+  fail/blocked). Role mentions default to the signed-in account; the harness
+  browser is declared as Chromium.
+- Cases continue past failed/blocked steps (outcome: fail > blocked > pass);
+  runs are cancellable (`POST /runs/{id}/cancel` + UI Cancel button).
+- Manual tab: precondition shown per case (QMetry only returns it with
+  `?fields=summary,precondition`); per-case login credentials (password
+  persisted plaintext in `manual_sessions/`, NEVER in HTTP payloads; empty =
+  .env admin); agent runs auto-write `agent_note` onto the mark (pushed in
+  the QMetry comment); clean start page (nothing loads until a TR is chosen).
+- **Evaluator-prompt iteration harness:** `scripts/prompt_eval/` — capture a
+  real step's evaluator inputs once, then judge them N times per prompt edit
+  (validate both directions). Lesson: for gpt-4o compliance, output-schema
+  slots beat rule bullets; never judge a prompt edit on a single live run.
+
+**Writing test steps that can pass:** step text must reference the app's real UI.
+Left nav: Dashboard, Equipment, Recipe → (Edit Inventory `/account/recipes`,
+HS2 Configurator, IRHS-E Configurator, RFHU Configurator), Account, Sites, Users,
+Account Requests, Help, Logs. `fixtures/sample_plan.json` matches the real nav.
+
+---
+
+## Reference links
+
+- QMetry for Jira Cloud REST API: https://documentation.qmetry.com/qtm4j/rest-api/
+- Jira REST API v3: https://developer.atlassian.com/cloud/jira/platform/rest/v3/
+- Azure OpenAI GPT-4o: https://learn.microsoft.com/en-us/azure/ai-services/openai/
+- Playwright Python: https://playwright.dev/python/docs/intro
+- Azure AI Foundry: https://learn.microsoft.com/en-us/azure/ai-foundry/
+- FastAPI: https://fastapi.tiangolo.com/
+- Vite: https://vitejs.dev/

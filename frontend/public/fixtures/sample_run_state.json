@@ -1,0 +1,131 @@
+{
+  "run_id": "run-fixture-001",
+  "plan": { "key": "SOUSCLOUD-TP-45", "name": "Inventory · smoke test" },
+  "status": "running",
+  "elapsed_seconds": 34.7,
+  "summary": { "total": 5, "passed": 2, "failed": 1, "blocked": 0 },
+  "test_cases": [
+    {
+      "id": "IRHS-R-01",
+      "name": "Create inventory recipe",
+      "status": "pass",
+      "steps": [
+        {
+          "action": "Navigate to Inventory module",
+          "detail": "goto /inventory/recipes",
+          "status": "pass",
+          "evaluation": "Recipe list page loaded successfully",
+          "duration_seconds": 1.2,
+          "screenshot_b64": null
+        },
+        {
+          "action": "Click New recipe button",
+          "detail": "click [data-test=new-recipe]",
+          "status": "pass",
+          "evaluation": "Recipe creation form appeared",
+          "duration_seconds": 0.8,
+          "screenshot_b64": null
+        },
+        {
+          "action": "Fill recipe name",
+          "detail": "fill [data-test=recipe-name] \"Grilled Salmon\"",
+          "status": "pass",
+          "evaluation": "Name field accepted input",
+          "duration_seconds": 0.5,
+          "screenshot_b64": null
+        },
+        {
+          "action": "Save recipe",
+          "detail": "click [data-test=save-recipe]",
+          "status": "pass",
+          "evaluation": "Recipe saved — confirmation toast appeared",
+          "duration_seconds": 1.4,
+          "screenshot_b64": null
+        }
+      ]
+    },
+    {
+      "id": "IRHS-R-02",
+      "name": "Edit existing recipe ingredient",
+      "status": "pass",
+      "steps": [
+        {
+          "action": "Navigate to Inventory module",
+          "detail": "goto /inventory/recipes",
+          "status": "pass",
+          "evaluation": "Recipe list loaded",
+          "duration_seconds": 1.1,
+          "screenshot_b64": null
+        },
+        {
+          "action": "Open first recipe",
+          "detail": "click [data-test=recipe-row]:first-child",
+          "status": "pass",
+          "evaluation": "Recipe detail panel opened",
+          "duration_seconds": 0.7,
+          "screenshot_b64": null
+        },
+        {
+          "action": "Edit ingredient quantity",
+          "detail": "fill [data-test=qty-input] \"4\"",
+          "status": "pass",
+          "evaluation": "Quantity updated to 4",
+          "duration_seconds": 0.6,
+          "screenshot_b64": null
+        }
+      ]
+    },
+    {
+      "id": "HSHU-01",
+      "name": "High-stock hold-unit flow",
+      "status": "fail",
+      "steps": [
+        {
+          "action": "Navigate to Stock Management",
+          "detail": "goto /stock/hold-units",
+          "status": "pass",
+          "evaluation": "Hold-unit list loaded",
+          "duration_seconds": 1.3,
+          "screenshot_b64": null
+        },
+        {
+          "action": "Trigger hold-unit flag",
+          "detail": "click [data-test=flag-hold]",
+          "status": "fail",
+          "evaluation": "Expected confirmation dialog — none appeared. Button did not respond.",
+          "duration_seconds": 3.1,
+          "screenshot_b64": null
+        }
+      ]
+    },
+    {
+      "id": "MUHC-01",
+      "name": "Multi-unit harvest cycle",
+      "status": "running",
+      "steps": [
+        {
+          "action": "Navigate to Harvest module",
+          "detail": "goto /harvest/cycles",
+          "status": "pass",
+          "evaluation": "Harvest cycle list loaded",
+          "duration_seconds": 1.0,
+          "screenshot_b64": null
+        },
+        {
+          "action": "Start new cycle",
+          "detail": "click [data-test=new-cycle]",
+          "status": "running",
+          "evaluation": null,
+          "duration_seconds": null,
+          "screenshot_b64": null
+        }
+      ]
+    },
+    {
+      "id": "FWM-01",
+      "name": "Forward waste management report",
+      "status": "queued",
+      "steps": []
+    }
+  ]
+}

@@ -1,0 +1,34 @@
+{
+  "id": "IRHS-R-01",
+  "key": "SOUSCLOUD-TC-101",
+  "name": "Create inventory recipe",
+  "description": "Verify a tester can create a new recipe in the Inventory module and save it successfully.",
+  "status": "To Do",
+  "priority": "High",
+  "steps": [
+    {
+      "stepId": 1,
+      "action": "Navigate to Inventory module",
+      "data": "",
+      "expected": "The Inventory > Recipes list page loads without error."
+    },
+    {
+      "stepId": 2,
+      "action": "Click the New recipe button",
+      "data": "",
+      "expected": "The recipe creation form appears in the right panel."
+    },
+    {
+      "stepId": 3,
+      "action": "Fill in the recipe name field with 'Grilled Salmon'",
+      "data": "Grilled Salmon",
+      "expected": "The name field accepts the input."
+    },
+    {
+      "stepId": 4,
+      "action": "Click Save",
+      "data": "",
+      "expected": "A confirmation toast appears and the recipe appears in the list."
+    }
+  ]
+}
