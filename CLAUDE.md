@@ -245,12 +245,32 @@ QMetry REST API client. **Status: implemented and working against the LIVE API**
 - **Host:** `https://qtmcloud.qmetry.com`, base `/rest/api/latest` (NOT
   `dukemanufacturing.atlassian.net`, NOT `/rest/qtm4j/v2`).
 - **Auth:** `apiKey: <key>` request header (from QMetry → Configuration → Open API).
+- **`fields` is load-bearing.** `summary` (the name) and `precondition` are
+  omitted from every response unless the query names them explicitly —
+  `fields=all` does NOT work. Asking for them is what lets a whole cycle's case
+  list load in one call. Constants: `_CASE_FIELDS`, `_CYCLE_FIELDS`.
 - Real response shapes (these differ from the published spec — they were
   reverse-engineered from live calls):
-  - `get_test_cycle` → cycle is wrapped under `data`; there is no cycle name field.
+  - `get_test_cycle` → cycle is wrapped under `data`. Cycles **do** have a name:
+    it's `summary`, and it arrives with `?fields=key,summary,description`
+    (corrected 2026-08-04 — the earlier "no cycle name field" note was just a
+    missing `fields` param).
   - `search_test_cases` → body must be `{"filter": {}}`; rows carry
-    `testCaseExecutionId` + `versionNo` (no `summary`).
-  - case name comes from `GET /testcases/{id}/versions/{no}` → `data.summary`.
+    `testCaseExecutionId` + `versionNo`, plus `summary`/`precondition` when
+    `fields` asks. No per-case version-detail call is needed any more.
+  - `search_test_cycles` / `search_project_test_cases` → paged catalogue searches.
+    Cycle search also takes `filter.archived: false`. Both return
+    `{total, rows, page_size, truncated}`; `page_size` is the raw row count so
+    callers page by the server's offset, not by rows kept.
+  - **Search is one substring on one field.** No AND, no wildcards, and unknown
+    filter keys are *silently ignored* — an `and: [...]` filter happily returns
+    the whole project, so never assume a filter worked because it didn't 400.
+    `filter.key` matches only a **complete** key (`SOUSCLOUD-TC-2075`; `TC-2075`
+    returns nothing). `_search_catalogue` therefore handles three query shapes:
+    a key-ish query (expanded to the full key via `QMETRY_PROJECT_KEY` /
+    `JIRA_PROJECT_KEY`), a single term (straight substring), and several terms
+    (probe each term's count, scan the rarest, AND the rest locally). Multi-term
+    search is capped at `_MAX_SCAN_PAGES`; `truncated` says `total` is a floor.
   - `get_test_steps` → body `{}`; some steps are *shareable* (real steps nested
     under `shareable.shareableTestSteps`) and are flattened by `_load_steps`.
   - `post_execution_result` → PUT to `/testcycles/{internal cycle id}/...` (the
@@ -258,6 +278,15 @@ QMetry REST API client. **Status: implemented and working against the LIVE API**
 `QMetryCaseSource` wraps the client; `server.py` auto-selects it when
 `QMETRY_API_KEY` is set (and isn't the `REPLACE_WITH…` placeholder), else
 `FixtureCaseSource`.
+
+`list_cases(plan_key, with_steps=True)`: steps cost one call per case, so the
+console asks for `with_steps=False` (one call for the whole run) and hydrates the
+opened case via `get_case_steps`. Cases carry `_steps_loaded`. `run_plan` keeps
+the eager default; `run_single_case` uses the cheap list + one hydrate.
+
+A plan key of `TC:<case key>` (`standalone_plan_key` / `is_standalone_plan`) is a
+synthetic one-case plan for a test case opened straight from the project library.
+It has no cycle and no execution id, so its results are never pushed to QMetry.
 
 ### agent/jira_client.py
 Jira REST API v3. Basic Auth = base64(`email:api_token`). Methods: `create_bug`,
@@ -308,7 +337,13 @@ FastAPI app. Endpoints (exactly what the frontend calls — see FRONTEND.md):
 - `POST /runs/{id}/report` → generate HTML report, return its path/url.
 - `POST /runs/{id}/log-bugs` → create Jira bugs for failed cases. Gated action —
   only succeeds on a finished run that has failures.
-- `GET /manual/{plan}` → manual session state.
+- `GET /cycles?q=&start=&limit=` → one page of test runs `{id, key, name}`.
+- `GET /testcases?q=&start=&limit=` → one page of the project's test case library
+  `{id, key, name, plan_key}`. Both push `q` down to QMetry and return
+  `total` + `next_start`.
+- `GET /manual/{plan}` → manual session state (`{plan}` = cycle id/key, or
+  `TC:<case key>` for a library case).
+- `GET /manual/{plan}/cases/{id}/steps` → hydrate one case's steps on demand.
 - `POST /manual/{plan}/cases/{id}/mark` → record a hand mark.
 - `POST /manual/{plan}/cases/{id}/run-agent` → run one case with the agent.
 - `POST /manual/{plan}/push-qmetry` → gated push of manual results to QMetry.
@@ -427,10 +462,12 @@ including SSE); frontend; the test suite.
 - `QMETRY_DEFAULT_CYCLE` + `GET /config`: the console opens on the real cycle.
 - Server watchdog: `scripts/serve.cmd` (start manually after reboot, or register
   the "SousChef QA Console" scheduled task).
-- **Known blockers:** TC-1985/1987/2211 need their `[~id]` menu references
-  rewritten as plain text IN QMETRY; TC-2 step 3 (accordion sidebar) is
-  un-verifiable with one screenshot — proposed per-action screenshots feature is
-  designed but awaiting approval.
+- ~~**Known blocker:** TC-1985/1987/2211 need their `[~id]` menu references
+  rewritten as plain text IN QMETRY~~ **FIXED 2026-08-04 in code, no QMetry edits
+  needed** — see the parameter-resolution note below.
+- **Known blocker:** TC-2 step 3 (accordion sidebar) is un-verifiable with one
+  screenshot — proposed per-action screenshots feature is designed but awaiting
+  approval.
 
 **2026-07-07/08 additions — all live, 185 tests:**
 - `logout` browser action + RECONCILE-FIRST translator rule; the translator
@@ -450,6 +487,60 @@ including SSE); frontend; the test suite.
   real step's evaluator inputs once, then judge them N times per prompt edit
   (validate both directions). Lesson: for gpt-4o compliance, output-schema
   slots beat rule bullets; never judge a prompt edit on a single live run.
+
+**2026-08-04 — TR/TC rail browser + deferred steps (255 tests):**
+- The rail replaces the cycle `<select>` with a two-level browser: a `TR`|`TC`
+  toggle, server-side debounced search over **all** 410 runs / 2534 cases, 50 per
+  page with `Load more`. Picking a TR drills in; picking a TC opens that one case
+  and keeps the list up. Spec: `docs/superpowers/specs/2026-08-04-tr-tc-browser-
+  and-lazy-loading-design.md`.
+- Runs now open in ~2s instead of ~21s for a 73-case cycle (10x): names and
+  preconditions ride along on the case search, and steps load per opened case.
+- Deep links: `?cycle=<idOrKey>` for a run, `?tc=<case key>` for a library case.
+- Follow-ups the same day: the rail picker is a single `<select>` (runs and cases
+  are alternatives, not tabs to compare); search accepts **keys** (`2075`,
+  `TC-2075`) and is **word-order independent** — `"recipe delete"` used to return
+  0 while `"delete recipe"` returned 6, both now return the same 31; rail rows
+  show the **full** `SOUSCLOUD-TC-####` key; and `duke-logo.png` was replaced (the
+  shipped file had an opaque black background, so the white brand tile rendered
+  as a black box).
+- **Per-step test data + agent-only verdicts (273 tests).** `test_data` is its own
+  field on each step (it used to be glued onto the action text); the console shows
+  it per step with an italic "none" when absent. QMetry has a case-level
+  `testData` field but it is **always null** — test data is per step only.
+  `Orchestrator._execute_step` re-joins action + test data for the model, so the
+  prompt is unchanged. All per-step Pass/Fail/Blocked/Skip buttons are gone: the
+  agent's verdict is the indication, so `ManualStore.set_agent` writes the run's
+  outcome onto the case status (a pre-existing hand step-mark still wins), which
+  is also what keeps the QMetry push gate reachable.
+- **`[~id]` tokens are PARAMETERS, not user mentions (fixed 2026-08-04).**
+  `GET /testcases/{idOrKey}/versions/{no}/parameters` resolves them:
+  `[{"rowIndex": 1, "params": [{"parameterId": 20322, "parameterName": "User
+  Role", "value": "Admin"}]}]`. `clean_step_text(text, params)` substitutes them
+  and `_load_steps` fetches them per case, so shareable steps read correctly per
+  case (`[~20322]` is "Admin" in TC-2 but "Access Manager" in TC-2579). Extra
+  `rowIndex` rows are data-driven iterations — only the first is used, and a case
+  with more is logged. Left unresolved these caused real damage: TC-1985 could
+  not identify its menu, went to Create Site instead of Edit Inventory, and
+  failed or blocked 14 of 26 steps. Preconditions never contain tokens (checked
+  across 500 cases), so resolution lives only in the per-case steps path and
+  costs nothing in the cheap case list.
+- **Case-level test data.** The same parameter rows are exposed per case as
+  `test_data: [{name, value}]` (QMetry calls the parameter table "Test Data"),
+  rendered under the precondition — e.g. TC-1985 shows `User Role=Admin,
+  PHU Type=RFHU (H2), Menu=Recipe, SubMenu=Edit Inventory`. It costs no extra
+  call: it comes from the same request that resolves the step tokens. Cached in
+  `_CASE_TEST_DATA_CACHE` alongside steps so a list refresh doesn't drop it.
+  The per-step `test_data` string is separate and unrelated (QMetry's per-step
+  testData field).
+- **Agent-notes panel removed from the UI.** It restated every step verdict as a
+  wall of text under the steps that already showed them. `agent_note` is still
+  recorded and still goes into the QMetry comment on push.
+- **Stranded "running" cases self-heal.** `agent_status` is persisted but run
+  state is in memory, so a kill/restart left a case "running" forever with Run
+  and Push both disabled. `GET /manual/{plan}` now clears any "running" mark
+  whose run id this process doesn't own, appending "interrupted (server
+  restarted)" to the agent note.
 
 **Writing test steps that can pass:** step text must reference the app's real UI.
 Left nav: Dashboard, Equipment, Recipe → (Edit Inventory `/account/recipes`,

@@ -1,39 +1,135 @@
 {
-  "plan": { "key": "SOUSCLOUD-TP-45", "name": "Inventory · smoke test" },
+  "plan": {
+    "key": "SOUSCLOUD-TP-45",
+    "name": "Inventory · smoke test"
+  },
   "qmetry_configured": false,
+  "standalone": false,
   "cases": [
     {
       "id": "IRHS-R-01",
       "name": "Create inventory recipe",
       "steps": [
-        { "action": "Navigate to the Inventory > Recipes page", "expected": "The recipe list page loads without error" },
-        { "action": "Click the New recipe button", "expected": "The recipe creation form is visible" },
-        { "action": "Fill the recipe name with 'Grilled Salmon'", "expected": "The name field accepts the input" },
-        { "action": "Click Save", "expected": "A confirmation toast appears and the recipe is in the list" }
+        {
+          "action": "Navigate to the Inventory > Recipes page",
+          "expected": "The recipe list page loads without error",
+          "test_data": "Recipe name: Grilled Salmon; Portion: 6 oz"
+        },
+        {
+          "action": "Click the New recipe button",
+          "expected": "The recipe creation form is visible",
+          "test_data": ""
+        },
+        {
+          "action": "Fill the recipe name with 'Grilled Salmon'",
+          "expected": "The name field accepts the input",
+          "test_data": ""
+        },
+        {
+          "action": "Click Save",
+          "expected": "A confirmation toast appears and the recipe is in the list",
+          "test_data": ""
+        }
+      ],
+      "steps_loaded": true,
+      "test_data": [
+        {
+          "name": "User Role",
+          "value": "Admin"
+        },
+        {
+          "name": "PHU Type",
+          "value": "RFHU (H2)"
+        }
       ],
       "precondition": "",
-      "manual": { "status": "pass", "comment": "", "failed_steps": [], "step_marks": {}, "agent_status": null, "agent_run_id": null, "agent_steps": null, "agent_note": "", "pushed_to_qmetry": false, "login_username": "", "has_password": false }
+      "manual": {
+        "status": "pass",
+        "comment": "",
+        "failed_steps": [],
+        "step_marks": {},
+        "agent_status": null,
+        "agent_run_id": null,
+        "agent_steps": null,
+        "agent_note": "",
+        "pushed_to_qmetry": false,
+        "login_username": "",
+        "has_password": false
+      }
     },
     {
       "id": "HSHU-01",
       "name": "High-stock hold-unit flow",
       "steps": [
-        { "action": "Navigate to the Stock > Hold units page", "expected": "The hold-unit list page loads" },
-        { "action": "Flag the first hold-unit for high-stock review", "expected": "A confirmation dialog appears asking to flag the hold-unit" }
+        {
+          "action": "Navigate to the Stock > Hold units page",
+          "expected": "The hold-unit list page loads",
+          "test_data": ""
+        },
+        {
+          "action": "Flag the first hold-unit for high-stock review",
+          "expected": "A confirmation dialog appears asking to flag the hold-unit",
+          "test_data": ""
+        }
       ],
+      "steps_loaded": true,
+      "test_data": [],
       "precondition": "",
-      "manual": { "status": "fail", "comment": "No confirmation dialog appeared after flagging.", "failed_steps": [1], "step_marks": {}, "agent_status": null, "agent_run_id": null, "agent_steps": null, "agent_note": "", "pushed_to_qmetry": false, "login_username": "", "has_password": false }
+      "manual": {
+        "status": "fail",
+        "comment": "No confirmation dialog appeared after flagging.",
+        "failed_steps": [
+          1
+        ],
+        "step_marks": {},
+        "agent_status": null,
+        "agent_run_id": null,
+        "agent_steps": null,
+        "agent_note": "",
+        "pushed_to_qmetry": false,
+        "login_username": "",
+        "has_password": false
+      }
     },
     {
       "id": "MUHC-01",
       "name": "Multi-unit harvest cycle",
       "steps": [
-        { "action": "Navigate to the Harvest > Cycles page", "expected": "The harvest cycle list loads" },
-        { "action": "Click Start new cycle", "expected": "A new-cycle wizard appears" }
+        {
+          "action": "Navigate to the Harvest > Cycles page",
+          "expected": "The harvest cycle list loads",
+          "test_data": ""
+        },
+        {
+          "action": "Click Start new cycle",
+          "expected": "A new-cycle wizard appears",
+          "test_data": ""
+        }
       ],
+      "steps_loaded": true,
+      "test_data": [],
       "precondition": "",
-      "manual": { "status": "unmarked", "comment": "", "failed_steps": [], "step_marks": {}, "agent_status": null, "agent_run_id": null, "agent_steps": null, "agent_note": "", "pushed_to_qmetry": false, "login_username": "", "has_password": false }
+      "manual": {
+        "status": "unmarked",
+        "comment": "",
+        "failed_steps": [],
+        "step_marks": {},
+        "agent_status": null,
+        "agent_run_id": null,
+        "agent_steps": null,
+        "agent_note": "",
+        "pushed_to_qmetry": false,
+        "login_username": "",
+        "has_password": false
+      }
     }
   ],
-  "summary": { "total": 3, "passed": 1, "failed": 1, "blocked": 0, "unmarked": 1, "pushed": 0 }
+  "summary": {
+    "total": 3,
+    "passed": 1,
+    "failed": 1,
+    "blocked": 0,
+    "unmarked": 1,
+    "pushed": 0
+  }
 }

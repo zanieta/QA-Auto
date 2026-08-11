@@ -94,7 +94,9 @@ button:focus-visible,
 }
 
 .rail-shield {
-  width: 40px;
+  /* Landscape, not square: the Duke shield artwork is ~1.5:1, and a square tile
+     shrank it to an illegible smudge. */
+  width: 58px;
   height: 40px;
   border-radius: 8px;
   background: var(--white);
@@ -112,7 +114,7 @@ button:focus-visible,
   width: 100%;
   height: 100%;
   object-fit: contain;
-  padding: 4px;
+  padding: 5px 6px;
 }
 
 .rail-title {
@@ -259,6 +261,209 @@ button:focus-visible,
   0%, 100% { opacity: 1; transform: scale(1); }
   50%      { opacity: 0.5; transform: scale(0.85); }
 }
+
+/* ============================================================
+   Rail browser — TR|TC toggle, search, paged results
+   ============================================================ */
+
+.browser {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0; /* let .browser-results own the scrolling, not the rail */
+}
+
+/* Runs and cases are alternatives, so one picker — not two tabs side by side. */
+.browser-pick {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 16px 16px 0;
+}
+
+.browser-pick-label {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: rgba(255, 255, 255, 0.55);
+}
+
+.browser-pick-select {
+  flex: 1;
+  padding: 6px 8px;
+  border-radius: var(--radius-sm);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--white);
+  font-family: var(--font);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+/* The popup list is drawn by the OS, so its options need readable colours. */
+.browser-pick-select option { color: var(--ink); background: var(--white); }
+
+.browser-pick-select:focus-visible {
+  outline: 2px solid var(--white);
+  outline-offset: 1px;
+}
+
+.browser-search {
+  position: relative;
+  padding: 12px 16px 0;
+}
+
+.browser-search-icon {
+  position: absolute;
+  left: 25px;
+  top: 50%;
+  transform: translateY(-40%);
+  font-size: 14px;
+  line-height: 1;
+  color: rgba(255, 255, 255, 0.5);
+  pointer-events: none;
+}
+
+.browser-search-input {
+  width: 100%;
+  padding: 7px 28px 7px 28px;
+  border-radius: var(--radius-sm);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--white);
+  font-family: var(--font);
+  font-size: 12px;
+}
+
+.browser-search-input::placeholder { color: rgba(255, 255, 255, 0.45); }
+
+.browser-search-input:focus-visible {
+  outline: 2px solid var(--white);
+  outline-offset: 1px;
+  background: rgba(255, 255, 255, 0.14);
+}
+
+.browser-search-clear {
+  position: absolute;
+  right: 22px;
+  top: 50%;
+  transform: translateY(-40%);
+  width: 18px;
+  height: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.16);
+  color: var(--white);
+  font-size: 10px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.browser-search-clear:hover { background: rgba(255, 255, 255, 0.3); }
+
+.browser-hint {
+  margin: 6px 16px 0;
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.4);
+}
+
+.browser-results {
+  flex: 1;
+  overflow-y: auto;
+  padding: 10px 8px 8px;
+}
+
+/* Stacked row: key line, then the name across up to two lines. Run names share
+   long prefixes, so one truncated line makes different runs look the same. */
+.browser-row {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 8px 12px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  cursor: pointer;
+}
+
+.browser-row:hover { background: rgba(255, 255, 255, 0.06); }
+.browser-row.active { background: rgba(255, 255, 255, 0.12); }
+
+.browser-row-key {
+  display: block;
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.6);
+}
+
+.browser-row-name {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  margin-top: 2px;
+  font-size: 12px;
+  line-height: 1.35;
+  color: var(--white);
+}
+
+.browser-msg {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 12px;
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.5);
+}
+
+.browser-msg.error { color: #FFC9C9; }
+
+.browser-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 10px 16px 14px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.browser-count {
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.5);
+}
+
+.browser-more {
+  padding: 5px 10px;
+  border-radius: var(--radius-sm);
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  background: transparent;
+  color: var(--white);
+  font-family: var(--font);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.browser-more:hover:not(:disabled) { background: rgba(255, 255, 255, 0.1); }
+.browser-more:disabled { opacity: 0.5; cursor: default; }
+
+.rail-back {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 14px 20px 12px;
+  border: 0;
+  background: transparent;
+  color: rgba(255, 255, 255, 0.7);
+  font-family: var(--font);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.rail-back:hover { color: var(--white); }
 
 /* ============================================================
    Stage (right)
@@ -594,9 +799,12 @@ button:focus-visible,
   .app { flex-direction: column; }
   .rail {
     width: 100%;
-    max-height: 240px;
+    /* Taller than the case list alone needed: the browser stacks a toggle, a
+       search box and a result list before anything scrolls. */
+    max-height: 340px;
   }
-  .rail-cases {
+  .rail-cases,
+  .browser-results {
     overflow-y: auto;
   }
   .stage-head,
@@ -710,30 +918,60 @@ button:focus-visible,
 .case-status-pill.fail { background: var(--red-soft); color: var(--red); }
 .case-status-pill.blocked { background: var(--amber-soft); color: var(--amber); }
 
-/* per-step mark row: agent chip + compact Pass/Fail/Blocked/Skip buttons */
-.step-mark-block { margin-top: 8px; display: flex; flex-direction: column; gap: 6px; }
-.step-mark-line { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.step-mark-group { display: flex; gap: 4px; }
-.step-mark-btn {
-  font-family: var(--font); font-size: 11px; font-weight: 500; cursor: pointer;
-  padding: 3px 9px; border-radius: 5px; border: 1px solid var(--line); background: var(--white); color: var(--muted);
+/* Per-step test data — shown on every step, "none" included, so a blank never
+   has to be read as either "nothing to enter" or "didn't load". */
+.manual-step-data {
+  margin-top: 8px;
+  display: flex;
+  /* Wrap, so a one-word value ("none") sits beside the label while a long
+     multi-line one drops to its own full-width line instead of being pushed
+     into a narrow ragged column. */
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 8px;
+  font-size: 12px;
 }
-.step-mark-btn.pass.active { background: var(--green-soft); border-color: var(--green); color: var(--green); }
-.step-mark-btn.fail.active { background: var(--red-soft); border-color: var(--red); color: var(--red); }
-.step-mark-btn.blocked.active { background: var(--amber-soft); border-color: var(--amber); color: var(--amber); }
-.step-mark-btn.skip.active { background: var(--line); border-color: var(--faint); color: var(--ink); }
-.step-mark-btn:focus-visible { outline: 2px solid var(--navy-bright); outline-offset: 2px; }
-.step-mark-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 
-.step-override { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.step-override label { font-size: 11px; color: var(--muted); }
-.step-override input {
-  font: inherit; font-size: 12px; padding: 5px 8px; min-width: 220px; flex: 1;
-  border: 1px solid rgba(27, 42, 107, 0.18); border-radius: var(--radius-sm);
+.manual-step-data-label {
+  flex-shrink: 0;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--muted);
 }
-.step-override input:focus-visible { outline: 2px solid var(--navy-bright); outline-offset: 1px; }
 
-.step-mark-note { font-size: 12px; color: var(--muted); white-space: pre-wrap; }
+.manual-step-data-value {
+  flex: 1 1 100%;
+  margin: 0;
+  padding: 6px 10px;
+  border-left: 2px solid var(--navy-line);
+  background: var(--paper);
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--ink);
+  white-space: pre-wrap;
+}
+
+.manual-step-data-none { color: var(--faint); font-style: italic; }
+
+/* The agent's verdict for a step, read-only — no mark buttons; the AI's
+   pass/fail IS the indication. */
+.step-verdict {
+  margin-top: 8px;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.step-verdict-reason {
+  font-size: 12px;
+  color: var(--muted);
+  white-space: pre-wrap;
+}
 
 .manual-notes { margin-top: 14px; display: flex; flex-direction: column; gap: 4px; }
 .manual-notes label { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.07em; color: var(--muted); }
@@ -792,6 +1030,51 @@ button:focus-visible,
   line-height: 1.5;
   white-space: pre-wrap;
 }
+
+/* Case-level test data: QMetry's parameter table for a parameterised case.
+   These values are what the steps' `[~id]` placeholders resolve to. */
+.manual-casedata {
+  margin: 10px 0 0;
+  padding: 10px 12px;
+  background: var(--navy-soft);
+  border-radius: var(--radius-sm);
+}
+
+.manual-casedata-label {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin-bottom: 6px;
+}
+
+.manual-casedata-list {
+  margin: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 24px;
+}
+
+.manual-casedata-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.manual-casedata-row dt {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.manual-casedata-row dd {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--ink);
+}
+
+.manual-casedata-row dd em { color: var(--faint); font-weight: 400; }
 
 .manual-credentials {
   display: flex;
@@ -912,11 +1195,13 @@ button:focus-visible,
 }
 
 .start-panel-shield {
-  width: 56px;
+  width: 84px;
   height: 56px;
   margin: 0 auto 16px;
   border-radius: var(--radius-sm);
-  background: var(--navy-soft);
+  /* White, not navy-soft: the shield ink is blue and read as low-contrast mush
+     on a pale blue tile. */
+  background: var(--white);
   display: flex;
   align-items: center;
   justify-content: center;

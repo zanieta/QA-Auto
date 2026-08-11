@@ -27,13 +27,28 @@ export default function App() {
   const [activeId, setActiveId] = useState(null)
   const [starting, setStarting] = useState(false)
   const [tab, setTab] = useState('manual') // 'manual' | 'live'
-  // Manual tab targets a QMetry cycle. Priority: ?cycle=<idOrKey> in the URL >
-  // the server's QMETRY_DEFAULT_CYCLE (GET /config) > the Live-run plan key >
-  // the demo fixture plan.
-  const cycleParam =
+
+  // What the rail browses: 'tr' = test runs, 'tc' = the project test case
+  // library. A TR is opened as a plan of its own; a library case is opened as
+  // the synthetic one-case plan "TC:<key>" (see agent/qmetry.py), which has no
+  // QMetry execution behind it and so is never pushed back.
+  const [mode, setMode] = useState('tr')
+
+  // Deep links: ?tc=<case key> for a library case, ?cycle=<idOrKey> for a run.
+  const initialParams =
     typeof window !== 'undefined'
-      ? new URLSearchParams(window.location.search).get('cycle')
-      : null
+      ? new URLSearchParams(window.location.search)
+      : new URLSearchParams()
+  const initialPlan = initialParams.get('tc')
+    ? `TC:${initialParams.get('tc')}`
+    : initialParams.get('cycle')
+
+  const [chosenPlan, setChosenPlan] = useState(initialPlan)
+  useEffect(() => {
+    if (initialPlan?.startsWith('TC:')) setMode('tc')
+    // Deep-link only — later mode changes are the tester's.
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+
   const [defaultCycle, setDefaultCycle] = useState(null)
   useEffect(() => {
     fetch('/config', { cache: 'no-store' })
@@ -42,37 +57,38 @@ export default function App() {
       .catch(() => {})
   }, [])
 
-  // Cycle picker: newest cycles from QMetry (empty in fixture mode).
-  const [cycles, setCycles] = useState([])
-  useEffect(() => {
-    fetch('/cycles', { cache: 'no-store' })
-      .then((r) => (r.ok ? r.json() : null))
-      .then((c) => setCycles(c?.cycles ?? []))
-      .catch(() => {})
-  }, [])
-  // Human-readable TR key for an internal cycle id (falls back to the id
-  // until /cycles arrives or when the cycle isn't in the newest-50 list).
-  const cycleKeyFor = (idOrKey) =>
-    cycles.find((c) => c.id === idOrKey || c.key === idOrKey)?.key || idOrKey
-
-  const [chosenCycle, setChosenCycle] = useState(null)
-  function handleSelectCycle(idOrKey) {
-    setChosenCycle(idOrKey)
+  function selectPlan(planKeyToOpen) {
+    setChosenPlan(planKeyToOpen)
     setManualActiveId(null)
     // Keep the URL shareable without a reload.
     const url = new URL(window.location.href)
-    url.searchParams.set('cycle', idOrKey)
+    url.searchParams.delete('cycle')
+    url.searchParams.delete('tc')
+    if (planKeyToOpen?.startsWith('TC:')) {
+      url.searchParams.set('tc', planKeyToOpen.slice(3))
+    } else if (planKeyToOpen) {
+      url.searchParams.set('cycle', planKeyToOpen)
+    }
     window.history.replaceState(null, '', url)
   }
 
-  // Fallback chain kept for the Live-run plan label after a run starts (and
-  // for handleRun, which is only reachable once a TR is chosen anyway).
-  const planKey =
-    chosenCycle || cycleParam || defaultCycle || state?.plan?.key || 'SOUSCLOUD-TP-45'
-  // The tester must explicitly pick a test run — no auto-load from
+  // A row in the rail browser: a run drills the rail in, a library case just
+  // opens in the stage and leaves the list up.
+  function handlePick(item) {
+    selectPlan(mode === 'tc' ? item.plan_key : item.id)
+  }
+
+  function handleBack() {
+    selectPlan(null)
+  }
+
+  // The tester must explicitly pick something — no auto-load from
   // QMETRY_DEFAULT_CYCLE or the demo fixture. Null here means "show the clean
   // start panel," not "not ready yet."
-  const manualPlanKey = chosenCycle || cycleParam || null
+  const manualPlanKey = chosenPlan || null
+  // Fallback kept for the Live-run plan label after a run starts.
+  const planKey = chosenPlan || defaultCycle || state?.plan?.key || 'SOUSCLOUD-TP-45'
+  const isStandalone = Boolean(chosenPlan?.startsWith('TC:'))
 
   // Manual session (the real QMetry cycle), shared by the rail + the manual stage.
   const {
@@ -137,6 +153,12 @@ export default function App() {
       : liveState
   const railActiveId = tab === 'manual' ? manualActiveId : activeId
   const railSelect = tab === 'manual' ? setManualActiveId : setActiveId
+  // The rail drills into a run's case list; a library case keeps the browser up
+  // so the tester can move to the next one without going back first.
+  const drilledIn = Boolean(manualPlanKey) && !isStandalone
+  // The human key the server resolved for the plan (SOUSCLOUD-TR-482 /
+  // SOUSCLOUD-TC-2), not the internal cycle id the URL carries.
+  const planLabel = manualState?.plan?.key ?? manualPlanKey
 
   const activeCase = useMemo(
     () => liveState?.test_cases?.find((c) => c.id === activeId) ?? null,
@@ -192,9 +214,12 @@ export default function App() {
         state={railState}
         activeId={railActiveId}
         onSelectCase={railSelect}
-        cycles={cycles}
-        currentCycle={manualPlanKey}
-        onSelectCycle={handleSelectCycle}
+        mode={mode}
+        onModeChange={setMode}
+        onPick={handlePick}
+        drilledIn={drilledIn}
+        onBack={handleBack}
+        browseActiveKey={isStandalone ? chosenPlan.slice(3) : null}
       />
       <main className="stage">
         <nav className="view-tabs" role="tablist" aria-label="Console view">
@@ -219,11 +244,7 @@ export default function App() {
         </nav>
 
         {!manualPlanKey ? (
-          <StartPanel
-            defaultCycle={defaultCycle}
-            defaultCycleLabel={defaultCycle ? cycleKeyFor(defaultCycle) : null}
-            onSelectCycle={handleSelectCycle}
-          />
+          <StartPanel defaultCycle={defaultCycle} onSelectCycle={selectPlan} />
         ) : tab === 'live' ? (
           <>
             <header className="stage-head">
@@ -252,8 +273,8 @@ export default function App() {
           </>
         ) : (
           <ManualView
-            plan={planKey}
-            planLabel={cycleKeyFor(planKey)}
+            plan={manualPlanKey}
+            planLabel={planLabel}
             state={manualState}
             error={manualError}
             loading={manualLoading}

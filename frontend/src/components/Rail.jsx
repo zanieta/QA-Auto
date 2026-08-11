@@ -1,7 +1,25 @@
-// Left rail: brand + plan meta (with cycle picker) + test case list.
-// The active case row gets a translucent white background.
+// Left rail. Two states:
+//
+//   browse     — the TR|TC picker (CaseBrowser). Nothing is open yet, or a
+//                library test case is open (TC mode keeps the list in view so
+//                the tester can walk down it).
+//   drilled in — a test run is open: back link, run meta with progress, and
+//                that run's cases. The active case row gets a translucent
+//                white background.
 
-export default function Rail({ state, activeId, onSelectCase, cycles = [], currentCycle, onSelectCycle }) {
+import CaseBrowser from './CaseBrowser.jsx'
+
+export default function Rail({
+  state,
+  activeId,
+  onSelectCase,
+  mode,
+  onModeChange,
+  onPick,
+  drilledIn,
+  onBack,
+  browseActiveKey,
+}) {
   const summary = state?.summary ?? { total: 0, passed: 0, failed: 0, blocked: 0 }
   const cases = state?.test_cases ?? []
   const done = summary.passed + summary.failed + (summary.blocked ?? 0)
@@ -27,73 +45,56 @@ export default function Rail({ state, activeId, onSelectCase, cycles = [], curre
         </div>
       </div>
 
-      <div className="rail-section-label">Plan</div>
-      <div className="rail-plan">
-        {cycles.length > 0 ? (
-          <select
-            className="rail-cycle-select"
-            aria-label="Test cycle"
-            value={currentCycle ?? ''}
-            onChange={(e) => onSelectCycle?.(e.target.value)}
-          >
-            {/* Clean-start state: nothing chosen yet — show a disabled
-                placeholder instead of pre-selecting a real cycle. */}
-            {!currentCycle && (
-              <option value="" disabled>
-                — choose test run —
-              </option>
-            )}
-            {/* Keep the current selection listed even when it's not in the
-                newest page of cycles. QMetry exposes keys only — no names. */}
-            {currentCycle && !cycles.some((c) => c.id === currentCycle || c.key === currentCycle) && (
-              <option value={currentCycle}>{currentCycle}</option>
-            )}
-            {cycles.map((c) => (
-              <option key={c.id} value={c.id}>
-                {c.key}
-              </option>
-            ))}
-          </select>
-        ) : (
-          <div className="rail-plan-key">{state?.plan?.key ?? '—'}</div>
-        )}
-        <div className="rail-plan-name">{state?.plan?.name ?? 'No plan selected'}</div>
-        <div className="rail-progress">
-          <div className="rail-progress-bar">
-            <div className="rail-progress-fill" style={{ width: `${pct}%` }} />
-          </div>
-          <div className="rail-progress-text">
-            <span>
-              {done} / {summary.total}
-            </span>
-            <span>{pct}%</span>
-          </div>
-        </div>
-      </div>
-
-      <div className="rail-section-label">Test cases</div>
-      <div className="rail-cases" role="list">
-        {/* Clean-start state: no TR chosen — leave the list area empty
-            instead of showing "No cases loaded." noise. */}
-        {cases.length === 0 && currentCycle && (
-          <div style={{ padding: '12px 16px', color: 'rgba(255,255,255,0.5)', fontSize: 12 }}>
-            No cases loaded.
-          </div>
-        )}
-        {cases.map((c) => (
-          <button
-            key={c.id}
-            type="button"
-            role="listitem"
-            className={`case-row ${activeId === c.id ? 'active' : ''}`}
-            onClick={() => onSelectCase?.(c.id)}
-          >
-            <CaseDot status={c.status} />
-            <span className="case-row-id">{c.id}</span>
-            <span className="case-row-name">{c.name}</span>
+      {!drilledIn ? (
+        <CaseBrowser
+          mode={mode}
+          onModeChange={onModeChange}
+          activeKey={browseActiveKey}
+          onPick={onPick}
+        />
+      ) : (
+        <>
+          <button type="button" className="rail-back" onClick={onBack}>
+            ← All test runs
           </button>
-        ))}
-      </div>
+
+          <div className="rail-plan">
+            <div className="rail-plan-key mono">{state?.plan?.key ?? '—'}</div>
+            <div className="rail-plan-name">{state?.plan?.name ?? 'No plan selected'}</div>
+            <div className="rail-progress">
+              <div className="rail-progress-bar">
+                <div className="rail-progress-fill" style={{ width: `${pct}%` }} />
+              </div>
+              <div className="rail-progress-text">
+                <span>
+                  {done} / {summary.total}
+                </span>
+                <span>{pct}%</span>
+              </div>
+            </div>
+          </div>
+
+          <div className="rail-section-label">Test cases</div>
+          <div className="rail-cases" role="list">
+            {cases.length === 0 && (
+              <div className="browser-msg">Loading test cases…</div>
+            )}
+            {cases.map((c) => (
+              <button
+                key={c.id}
+                type="button"
+                role="listitem"
+                className={`case-row ${activeId === c.id ? 'active' : ''}`}
+                onClick={() => onSelectCase?.(c.id)}
+              >
+                <CaseDot status={c.status} />
+                <span className="case-row-id">{c.id}</span>
+                <span className="case-row-name">{c.name}</span>
+              </button>
+            ))}
+          </div>
+        </>
+      )}
     </aside>
   )
 }

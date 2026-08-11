@@ -280,6 +280,134 @@ def test_get_manual_builds_session(client, tmp_path, monkeypatch):
     assert body["cases"][0]["manual"]["status"] == "unmarked"
     assert "execution_id" not in body["cases"][0]
     assert body["summary"]["total"] == 1
+    assert body["standalone"] is False
+
+
+def test_get_manual_unsticks_a_stranded_running_case(client, tmp_path, monkeypatch):
+    """`agent_status: "running"` is persisted but run state is in memory, so a
+    kill or restart strands the case as running forever — which disables both
+    Run and Push for it."""
+    monkeypatch.setattr("agent.manual_state.MANUAL_DIR", tmp_path)
+    server_mod.MANUAL = server_mod.ManualStore()
+    cases = [{"id": "A", "name": "Case A", "steps": []}]
+    monkeypatch.setattr(server_mod, "_make_case_source", lambda: _fake_case_source(cases))
+    monkeypatch.setattr(server_mod, "_qmetry_configured", lambda: False)
+    client.get("/manual/TP-45")
+    server_mod.MANUAL.set_agent("TP-45", "A", "running", "run-gone")
+    server_mod.RUNS.pop("run-gone", None)
+
+    body = client.get("/manual/TP-45").json()
+    mark = body["cases"][0]["manual"]
+    assert mark["agent_status"] is None
+    assert "interrupted" in mark["agent_note"]
+
+
+def test_get_manual_leaves_a_live_run_alone(client, tmp_path, monkeypatch):
+    """A run this process still owns is genuinely running — don't clear it."""
+    monkeypatch.setattr("agent.manual_state.MANUAL_DIR", tmp_path)
+    server_mod.MANUAL = server_mod.ManualStore()
+    cases = [{"id": "A", "name": "Case A", "steps": []}]
+    monkeypatch.setattr(server_mod, "_make_case_source", lambda: _fake_case_source(cases))
+    monkeypatch.setattr(server_mod, "_qmetry_configured", lambda: False)
+    client.get("/manual/TP-45")
+    server_mod.MANUAL.set_agent("TP-45", "A", "running", "run-live")
+    server_mod.RUNS["run-live"] = object()
+    try:
+        body = client.get("/manual/TP-45").json()
+        assert body["cases"][0]["manual"]["agent_status"] == "running"
+    finally:
+        server_mod.RUNS.pop("run-live", None)
+
+
+def test_get_manual_asks_the_source_to_skip_steps(client, tmp_path, monkeypatch):
+    """Opening a run must cost one call, not one per case — the console fetches
+    the steps of the case the tester opens."""
+    monkeypatch.setattr("agent.manual_state.MANUAL_DIR", tmp_path)
+    server_mod.MANUAL = server_mod.ManualStore()
+    source = _fake_case_source([{"id": "A", "name": "Case A", "steps": []}])
+    monkeypatch.setattr(server_mod, "_make_case_source", lambda: source)
+    monkeypatch.setattr(server_mod, "_qmetry_configured", lambda: False)
+
+    client.get("/manual/TP-45")
+    source.list_cases.assert_awaited_once_with("TP-45", with_steps=False)
+
+
+# ----- GET /manual/{plan}/cases/{id}/steps --------------------------------
+
+
+def test_get_case_steps_hydrates_on_demand(client, tmp_path, monkeypatch):
+    monkeypatch.setattr("agent.manual_state.MANUAL_DIR", tmp_path)
+    server_mod.MANUAL = server_mod.ManualStore()
+    cases = [
+        {"id": "A", "name": "Case A", "steps": [], "_steps_loaded": False},
+        {"id": "B", "name": "Case B", "steps": [], "_steps_loaded": False},
+    ]
+    source = _fake_case_source(cases)
+    source.get_case_steps = _AsyncMock(return_value=[{"action": "go", "expected": "ok"}])
+    source.get_case_test_data = _AsyncMock(
+        return_value=[{"name": "User Role", "value": "Admin"}]
+    )
+    monkeypatch.setattr(server_mod, "_make_case_source", lambda: source)
+    monkeypatch.setattr(server_mod, "_qmetry_configured", lambda: False)
+
+    built = client.get("/manual/TP-45").json()
+    assert [c["steps_loaded"] for c in built["cases"]] == [False, False]
+
+    r = client.get("/manual/TP-45/cases/A/steps")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["steps"] == [{"action": "go", "expected": "ok", "test_data": ""}]
+    assert body["steps_loaded"] is True
+    # The case's own test data (QMetry's parameter table) rides along.
+    assert body["test_data"] == [{"name": "User Role", "value": "Admin"}]
+    source.get_case_steps.assert_awaited_once_with("TP-45", "A")
+
+    # Only the opened case is hydrated; the session keeps the other one deferred.
+    after = client.get("/manual/TP-45").json()
+    assert {c["id"]: c["steps_loaded"] for c in after["cases"]} == {"A": True, "B": False}
+
+
+def test_get_case_steps_is_cheap_when_already_loaded(client, tmp_path, monkeypatch):
+    monkeypatch.setattr("agent.manual_state.MANUAL_DIR", tmp_path)
+    server_mod.MANUAL = server_mod.ManualStore()
+    cases = [{"id": "A", "name": "Case A", "steps": [{"action": "go", "expected": "ok"}]}]
+    source = _fake_case_source(cases)
+    source.get_case_steps = _AsyncMock(return_value=[])
+    monkeypatch.setattr(server_mod, "_make_case_source", lambda: source)
+    monkeypatch.setattr(server_mod, "_qmetry_configured", lambda: False)
+    client.get("/manual/TP-45")
+
+    r = client.get("/manual/TP-45/cases/A/steps")
+    assert r.status_code == 200
+    assert r.json()["steps"] == [{"action": "go", "expected": "ok", "test_data": ""}]
+    source.get_case_steps.assert_not_awaited()
+
+
+def test_get_case_steps_404s_without_a_session(client, tmp_path, monkeypatch):
+    monkeypatch.setattr("agent.manual_state.MANUAL_DIR", tmp_path)
+    server_mod.MANUAL = server_mod.ManualStore()
+    r = client.get("/manual/NOPE/cases/A/steps")
+    assert r.status_code == 404
+
+
+def test_get_case_steps_404s_for_unknown_case(client, tmp_path, monkeypatch):
+    monkeypatch.setattr("agent.manual_state.MANUAL_DIR", tmp_path)
+    server_mod.MANUAL = server_mod.ManualStore()
+    cases = [{"id": "A", "name": "Case A", "steps": []}]
+    monkeypatch.setattr(server_mod, "_make_case_source", lambda: _fake_case_source(cases))
+    monkeypatch.setattr(server_mod, "_qmetry_configured", lambda: False)
+    client.get("/manual/TP-45")
+    assert client.get("/manual/TP-45/cases/ZZZ/steps").status_code == 404
+
+
+def test_push_rejects_a_standalone_case(client, tmp_path, monkeypatch):
+    """A library case has no execution — say so instead of silently skipping."""
+    monkeypatch.setattr("agent.manual_state.MANUAL_DIR", tmp_path)
+    server_mod.MANUAL = server_mod.ManualStore()
+    monkeypatch.setattr(server_mod, "_qmetry_configured", lambda: True)
+    r = client.post("/manual/TC:SOUSCLOUD-TC-2/push-qmetry")
+    assert r.status_code == 409
+    assert "standalone" in r.json()["detail"].lower()
 
 
 # ----- POST /manual/{plan}/cases/{id}/mark --------------------------------
@@ -923,13 +1051,101 @@ def test_html_responses_are_not_cached(client):
 def test_cycles_lists_qmetry_cycles(client, monkeypatch):
     monkeypatch.setattr(server_mod, "_qmetry_configured", lambda: True)
     fake_client = MagicMock()
-    fake_client.list_test_cycles = AsyncMock(return_value=[
-        {"id": "aaa", "key": "SOUSCLOUD-TR-490"},
-    ])
+    fake_client.search_test_cycles = AsyncMock(return_value={
+        "total": 430,
+        "page_size": 1,
+        "rows": [{"id": "aaa", "key": "SOUSCLOUD-TR-490", "name": "Smoke test"}],
+    })
     monkeypatch.setattr(server_mod, "_make_qmetry_client", lambda: fake_client)
     r = client.get("/cycles")
     assert r.status_code == 200
-    assert r.json()["cycles"] == [{"id": "aaa", "key": "SOUSCLOUD-TR-490"}]
+    body = r.json()
+    assert body["cycles"] == [
+        {"id": "aaa", "key": "SOUSCLOUD-TR-490", "name": "Smoke test"}
+    ]
+    assert body["total"] == 430
+
+
+def test_cycles_next_start_counts_rows_the_server_dropped(client, monkeypatch):
+    """A page can return more rows than it yields (archived cycles). Paging must
+    advance by what QMetry returned, or Load more skips records."""
+    monkeypatch.setattr(server_mod, "_qmetry_configured", lambda: True)
+    fake_client = MagicMock()
+    fake_client.search_test_cycles = AsyncMock(return_value={
+        "total": 430,
+        "page_size": 50,   # QMetry returned 50 …
+        "rows": [{"id": "a", "key": "TR-1", "name": "One"}],  # … 1 survived
+    })
+    monkeypatch.setattr(server_mod, "_make_qmetry_client", lambda: fake_client)
+    body = client.get("/cycles?start=0&limit=50").json()
+    assert body["next_start"] == 50
+
+
+def test_cycles_passes_query_and_paging_through(client, monkeypatch):
+    """Search must reach QMetry, not filter the page in hand — there are far
+    more runs than any one page holds."""
+    monkeypatch.setattr(server_mod, "_qmetry_configured", lambda: True)
+    fake_client = MagicMock()
+    fake_client.search_test_cycles = AsyncMock(
+        return_value={"total": 0, "page_size": 0, "rows": []}
+    )
+    monkeypatch.setattr(server_mod, "_make_qmetry_client", lambda: fake_client)
+    r = client.get("/cycles?q=regression&start=50&limit=25")
+    assert r.status_code == 200
+    fake_client.search_test_cycles.assert_awaited_once_with(
+        query="regression", start_at=50, max_results=25
+    )
+
+
+def test_cycles_blank_query_is_not_a_filter(client, monkeypatch):
+    monkeypatch.setattr(server_mod, "_qmetry_configured", lambda: True)
+    fake_client = MagicMock()
+    fake_client.search_test_cycles = AsyncMock(
+        return_value={"total": 0, "page_size": 0, "rows": []}
+    )
+    monkeypatch.setattr(server_mod, "_make_qmetry_client", lambda: fake_client)
+    client.get("/cycles?q=")
+    assert fake_client.search_test_cycles.await_args.kwargs["query"] is None
+
+
+# ----- GET /testcases -------------------------------------------------------
+
+
+def test_testcases_lists_project_library_with_plan_keys(client, monkeypatch):
+    monkeypatch.setattr(server_mod, "_qmetry_configured", lambda: True)
+    fake_client = MagicMock()
+    fake_client.search_project_test_cases = AsyncMock(return_value={
+        "total": 2534,
+        "page_size": 1,
+        "rows": [{"id": "abc", "key": "SOUSCLOUD-TC-2", "name": "Login page"}],
+    })
+    monkeypatch.setattr(server_mod, "_make_qmetry_client", lambda: fake_client)
+    r = client.get("/testcases?q=login&start=0&limit=50")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["total"] == 2534
+    assert body["cases"] == [
+        {
+            "id": "abc",
+            "key": "SOUSCLOUD-TC-2",
+            "name": "Login page",
+            # The key the console opens the case with — a one-case plan.
+            "plan_key": "TC:SOUSCLOUD-TC-2",
+        }
+    ]
+    fake_client.search_project_test_cases.assert_awaited_once_with(
+        query="login", start_at=0, max_results=50
+    )
+
+
+def test_testcases_empty_without_qmetry(client, monkeypatch):
+    monkeypatch.setattr(server_mod, "_qmetry_configured", lambda: False)
+    r = client.get("/testcases")
+    assert r.status_code == 200
+    assert r.json() == {
+        "cases": [], "total": 0, "start": 0, "limit": 50, "next_start": 0,
+        "truncated": False,
+    }
 
 
 def test_cycles_empty_without_qmetry(client, monkeypatch):
@@ -937,6 +1153,7 @@ def test_cycles_empty_without_qmetry(client, monkeypatch):
     r = client.get("/cycles")
     assert r.status_code == 200
     assert r.json()["cycles"] == []
+    assert r.json()["total"] == 0
 
 
 # ----- _qmetry_execution_mode -----------------------------------------------

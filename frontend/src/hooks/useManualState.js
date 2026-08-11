@@ -46,6 +46,21 @@ export function useManualState(planKey) {
   return { state, error, loading, refresh }
 }
 
+// Cases arrive without their steps — one QMetry call per case would make a big
+// run take minutes to open. This fetches the steps of the case the tester
+// actually opened. Idempotent server-side, so a repeat costs nothing.
+export async function fetchCaseSteps(planKey, caseId) {
+  const res = await fetch(
+    `/manual/${encodeURIComponent(planKey)}/cases/${encodeURIComponent(caseId)}/steps`,
+    { cache: 'no-store' },
+  )
+  if (!res.ok) {
+    const detail = await res.json().catch(() => ({}))
+    throw new Error(detail.detail || `Could not load steps: ${res.status}`)
+  }
+  return res.json()
+}
+
 export async function markCase(planKey, caseId, body) {
   const res = await fetch(
     `/manual/${encodeURIComponent(planKey)}/cases/${encodeURIComponent(caseId)}/mark`,

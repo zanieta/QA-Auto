@@ -42,8 +42,13 @@ class FakeCaseSource:
     async def get_plan(self, plan_key):
         return self._plan
 
-    async def list_cases(self, plan_key):
-        return list(self._cases)
+    async def list_cases(self, plan_key, with_steps=True):
+        # Fake cases always carry their steps inline, like FixtureCaseSource.
+        return [{**c, "_steps_loaded": True} for c in self._cases]
+
+    async def get_case_steps(self, plan_key, case_id):
+        match = next((c for c in self._cases if c["id"] == case_id), None)
+        return match["steps"] if match else []
 
 
 def _fake_browser():
@@ -454,6 +459,40 @@ async def test_multi_action_step_evaluates_all_frames():
     assert expected == "All sub-items visible"
     # the tape still carries a single (final) screenshot — contract unchanged
     assert state.test_cases[0].steps[0].screenshot_b64 == "PNG-B64"
+
+
+@pytest.mark.asyncio
+async def test_translator_still_receives_the_step_test_data():
+    """`test_data` is a separate field now (the console labels it per step), so
+    the orchestrator has to fold it back into the instruction — those values are
+    exactly what the model must type."""
+    cases = [{"id": "A", "name": "Cook time", "steps": [
+        {"action": "Enter the cook time", "expected": "Accepted",
+         "test_data": "Cook Mode Time: 45"},
+        {"action": "Click Save", "expected": "Saved", "test_data": ""},
+    ]}]
+    azure = _fake_azure(
+        translate_side_effect=[_ok_actions(), _ok_actions()],
+        evaluate_side_effect=[
+            {"status": "pass", "reason": "ok"},
+            {"status": "pass", "reason": "ok"},
+        ],
+    )
+    orch = Orchestrator(
+        azure=azure,
+        browser_factory=lambda: _fake_browser(),
+        case_source=FakeCaseSource({"key": "X", "name": "x"}, cases),
+        on_update=lambda s: None,
+    )
+    state = await orch.run_single_case("A")
+
+    first = azure.translate_step.call_args_list[0].args[0]
+    assert first == "Enter the cook time\nTest data: Cook Mode Time: 45"
+    # A step without test data gets no dangling label.
+    second = azure.translate_step.call_args_list[1].args[0]
+    assert second == "Click Save"
+    assert "Test data" not in second
+    assert state.test_cases[0].status == "pass"
 
 
 @pytest.mark.asyncio

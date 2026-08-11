@@ -97,6 +97,46 @@ def test_set_agent_and_mark_pushed(store):
     assert case.mark.pushed_to_qmetry is True
 
 
+def test_agent_verdict_becomes_the_case_status(store):
+    """The console has no per-step mark buttons — the agent's pass/fail IS the
+    result. Without this the status would stay "unmarked" and the QMetry push,
+    which is gated on something being marked, could never unlock."""
+    store.build("TP-45", "Smoke", RAW_CASES, qmetry_configured=True)
+    case = store.get("TP-45").find_case("IRHS-R-01")
+    assert case.mark.status == "unmarked"
+
+    store.set_agent("TP-45", "IRHS-R-01", "running", "run-1")
+    assert case.mark.status == "unmarked"  # a run in flight is not a verdict
+
+    store.set_agent("TP-45", "IRHS-R-01", "fail", "run-1")
+    assert case.mark.status == "fail"
+
+
+def test_agent_verdict_does_not_overwrite_a_hand_mark(store):
+    """A human ruling on a step outranks the AI — re-running the agent must not
+    quietly replace it."""
+    store.build("TP-45", "Smoke", RAW_CASES, qmetry_configured=True)
+    store.set_step_mark("TP-45", "IRHS-R-01", 0, "pass", "checked by hand")
+    store.set_agent("TP-45", "IRHS-R-01", "fail", "run-1")
+    assert store.get("TP-45").find_case("IRHS-R-01").mark.status == "pass"
+
+
+def test_step_test_data_is_serialized_per_step(store):
+    """Test data lives on individual steps (QMetry has no case-level value), and
+    a step without any serializes as "" so the UI can render "none"."""
+    raw = [{
+        "id": "A", "name": "Case A",
+        "steps": [
+            {"action": "Enter time", "expected": "ok", "test_data": "Time: 45"},
+            {"action": "Save", "expected": "saved"},
+        ],
+    }]
+    store.build("TP-45", "Smoke", raw, qmetry_configured=False)
+    steps = store.get("TP-45").find_case("A").to_dict()["steps"]
+    assert steps[0]["test_data"] == "Time: 45"
+    assert steps[1]["test_data"] == ""
+
+
 _RAW_CASES_WITH_CYCLE = [
     {
         "id": "CYC-01",

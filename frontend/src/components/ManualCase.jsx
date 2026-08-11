@@ -1,21 +1,17 @@
 // frontend/src/components/ManualCase.jsx
-// One test case: read-only steps, per-step marking (Pass/Fail/Blocked/Skip)
-// beside the agent chip, an overall notes field, and an optional inline
-// agent run. The case's status is derived server-side from the step marks
-// and shown as a read-only pill in the header.
+// One test case: read-only steps each showing their test data and the agent's
+// verdict, an overall notes field, and an optional inline agent run.
+//
+// There are deliberately NO per-step Pass/Fail/Blocked/Skip buttons — the
+// agent's verdict is the indication that matters, so each step shows only an
+// `agent: pass` / `agent: fail` chip. The case's status pill follows that
+// verdict (set server-side in ManualStore.set_agent).
 
 import { useEffect, useRef, useState } from 'react'
 
 import Step from './Step.jsx'
-import { cancelRun, markCase, markStep, runAgentCase, saveCaseCredentials } from '../hooks/useManualState.js'
+import { cancelRun, markCase, runAgentCase, saveCaseCredentials } from '../hooks/useManualState.js'
 import { useRunState } from '../hooks/useRunState.js'
-
-const STEP_MARKS = [
-  { key: 'pass', label: 'Pass' },
-  { key: 'fail', label: 'Fail' },
-  { key: 'blocked', label: 'Blocked' },
-  { key: 'skip', label: 'Skip' },
-]
 
 // QMetry/Jira steps come back as wiki markup. Strip the noisiest tokens so the
 // text is readable; rendered with white-space: pre-wrap so line breaks survive.
@@ -102,11 +98,6 @@ export default function ManualCase({ plan, testCase, onChanged }) {
     }
   }
 
-  async function handleStepMark(index, status, note, agentStatus) {
-    await markStep(plan, testCase.id, index, { status, note, agent_status: agentStatus ?? null })
-    await onChanged?.()
-  }
-
   async function handleRunAgent() {
     setRunErr(null)
     const subset = agentSel.length < testCase.steps.length ? agentSel : null
@@ -191,6 +182,26 @@ export default function ManualCase({ plan, testCase, onChanged }) {
         </div>
       )}
 
+      {/* The case's own test data — QMetry surfaces a parameterised case's
+          parameter table as "Test Data". These are the values that fill the
+          `[~id]` placeholders in the steps below, so showing them here is what
+          makes a shared step ("log in as X") legible for THIS case. Absent on
+          most cases, so the block is omitted rather than showing "none" —
+          unlike the per-step field, where a missing label would be ambiguous. */}
+      {testCase.test_data?.length > 0 && (
+        <div className="manual-casedata">
+          <div className="manual-casedata-label">Test data</div>
+          <dl className="manual-casedata-list">
+            {testCase.test_data.map((p) => (
+              <div key={p.name} className="manual-casedata-row">
+                <dt>{p.name}</dt>
+                <dd className="mono">{p.value || <em>empty</em>}</dd>
+              </div>
+            ))}
+          </dl>
+        </div>
+      )}
+
       <div className="manual-credentials">
         <span className="manual-credentials-label">Login as</span>
         <input
@@ -247,13 +258,18 @@ export default function ManualCase({ plan, testCase, onChanged }) {
                 {s.expected && (
                   <div className="manual-step-expected">{cleanMarkup(s.expected)}</div>
                 )}
-                <StepMarkRow
-                  caseId={testCase.id}
-                  index={i}
-                  chip={chipByStep[i]}
-                  mark={stepMark}
-                  onMark={handleStepMark}
-                />
+                {/* Shown on every step, "none" included: a blank field would
+                    leave the tester guessing whether there's nothing to enter
+                    or the data just didn't load. */}
+                <div className="manual-step-data">
+                  <span className="manual-step-data-label">Test data</span>
+                  {s.test_data ? (
+                    <span className="manual-step-data-value">{cleanMarkup(s.test_data)}</span>
+                  ) : (
+                    <span className="manual-step-data-none">none</span>
+                  )}
+                </div>
+                <AgentVerdict chip={chipByStep[i]} mark={stepMark} />
               </div>
             </li>
           )
@@ -272,30 +288,34 @@ export default function ManualCase({ plan, testCase, onChanged }) {
         />
       </div>
 
-      {m.agent_note ? (
-        <div className="agent-note" aria-label="Agent run notes">
-          <div className="agent-note-label">Agent notes</div>
-          <pre>{m.agent_note}</pre>
-        </div>
-      ) : null}
-
+      {/* The agent-notes panel is deliberately not rendered. Every verdict it
+          restated is already on its own step, so it was a long duplicate wall of
+          text. `agent_note` is still recorded server-side and still goes into
+          the QMetry comment on push — only the on-screen block is gone. */}
 
       {agentRunId && (
-        <AgentTape
-          key={agentRunId}
-          state={agentState}
-          caseId={testCase.id}
-          onDone={onChanged}
-          executed={executed}
-          stepMarks={m.step_marks}
-          onMark={handleStepMark}
-        />
+        <AgentTape key={agentRunId} state={agentState} caseId={testCase.id} onDone={onChanged} />
       )}
     </section>
   )
 }
 
-function AgentTape({ state, caseId, onDone, executed, stepMarks, onMark }) {
+// The agent's verdict for one step, read-only. `chip` is the live tape result;
+// `mark.agent_status` is what a previous run recorded, so the verdict survives a
+// refresh once the run's state is gone.
+function AgentVerdict({ chip, mark }) {
+  const status = chip && chip.status !== 'running' ? chip.status : mark?.agent_status
+  if (!status) return null
+  const reason = chip?.evaluation || ''
+  return (
+    <div className="step-verdict">
+      <span className={`agent-chip ${status}`}>agent: {status}</span>
+      {reason && <span className="step-verdict-reason">{reason}</span>}
+    </div>
+  )
+}
+
+function AgentTape({ state, caseId, onDone }) {
   const firedRef = useRef(false)
 
   useEffect(() => {
@@ -310,120 +330,14 @@ function AgentTape({ state, caseId, onDone, executed, stepMarks, onMark }) {
   return (
     <div className="manual-agent-tape">
       <div className="section-label">Agent run · {agentCase?.status ?? 'running'}</div>
-      {steps.map((s, i) => {
-        // Tape position i maps back to the ORIGINAL step index so a verdict
-        // given here lands on the same mark as the one in the steps list.
-        const orig = executed?.[i]
-        return (
-          <div key={i} className="tape-entry">
-            <Step step={s} />
-            {orig != null && s.status !== 'running' && (
-              <StepMarkRow
-                caseId={caseId}
-                index={orig}
-                chip={s}
-                mark={stepMarks?.[String(orig)]}
-                onMark={onMark}
-              />
-            )}
-          </div>
-        )
-      })}
+      {/* Just the tape. Each step already carries the agent's verdict in the
+          steps list above — repeating a mark row here was duplicate UI. */}
+      {steps.map((s, i) => (
+        <div key={i} className="tape-entry">
+          <Step step={s} />
+        </div>
+      ))}
       {steps.length === 0 && <div className="manual-step-expected">Agent is starting…</div>}
-    </div>
-  )
-}
-
-// Per-step mark: the agent chip plus four small Pass/Fail/Blocked/Skip
-// buttons. A click matching the chip's verdict (or no chip at all) saves
-// immediately; a click that contradicts it opens an inline note field —
-// the override cannot be saved without a note.
-function StepMarkRow({ caseId, index, chip, mark, onMark }) {
-  const agentStatus = chip?.status ?? (mark?.agent_status ?? null)
-  const [draft, setDraft] = useState(null) // { status, note } while overriding
-  const [saving, setSaving] = useState(false)
-  const [err, setErr] = useState(null)
-
-  async function commit(status, note) {
-    setErr(null)
-    setSaving(true)
-    try {
-      await onMark(index, status, note, agentStatus)
-      setDraft(null)
-    } catch (e) {
-      setErr(e.message)
-    } finally {
-      setSaving(false)
-    }
-  }
-
-  function handleClick(clickStatus) {
-    const contradicts = agentStatus && clickStatus !== agentStatus
-    if (contradicts) {
-      setErr(null)
-      setDraft({ status: clickStatus, note: '' })
-      return
-    }
-    commit(clickStatus, '')
-  }
-
-  function handleSaveOverride() {
-    if (!draft || !draft.note.trim()) return
-    commit(draft.status, draft.note)
-  }
-
-  return (
-    <div className="step-mark-block">
-      <div className="step-mark-line">
-        {chip && chip.status !== 'running' && (
-          <span className={`agent-chip ${chip.status}`} title={chip.evaluation || ''}>
-            agent: {chip.status}
-          </span>
-        )}
-        <div className="step-mark-group" role="group" aria-label={`Mark step ${index + 1}`}>
-          {STEP_MARKS.map((sm) => (
-            <button
-              key={sm.key}
-              type="button"
-              className={`step-mark-btn ${sm.key} ${mark?.status === sm.key ? 'active' : ''}`}
-              disabled={saving}
-              onClick={() => handleClick(sm.key)}
-            >
-              {sm.label}
-            </button>
-          ))}
-        </div>
-      </div>
-
-      {draft && (
-        <div className="step-override">
-          <label htmlFor={`override-${caseId}-${index}`}>Why override the AI assessment?</label>
-          <input
-            id={`override-${caseId}-${index}`}
-            type="text"
-            value={draft.note}
-            placeholder="Explain the override"
-            onChange={(e) => setDraft({ ...draft, note: e.target.value })}
-          />
-          <button
-            type="button"
-            className="btn btn-ghost"
-            disabled={saving || !draft.note.trim()}
-            onClick={handleSaveOverride}
-          >
-            Save
-          </button>
-        </div>
-      )}
-
-      {err && <span className="toast-error" role="alert">{err}</span>}
-
-      {!draft && mark?.note && (
-        <div className="step-mark-note">
-          {mark.note}
-          {mark.overrode ? ` (overrode agent: ${mark.agent_status})` : ''}
-        </div>
-      )}
     </div>
   )
 }

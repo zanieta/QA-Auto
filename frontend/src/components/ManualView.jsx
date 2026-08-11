@@ -3,24 +3,44 @@
 // Case list + selection live in the left rail (owned by App); this view receives
 // the shared manual session state and the active case id as props.
 
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 
 import ManualCase from './ManualCase.jsx'
-import { pushToQmetry } from '../hooks/useManualState.js'
+import { fetchCaseSteps, pushToQmetry } from '../hooks/useManualState.js'
 
 export default function ManualView({ plan, planLabel, state, error, loading, refresh, activeId }) {
   const [pushing, setPushing] = useState(false)
   const [pushMsg, setPushMsg] = useState(null)
   const [pushFailed, setPushFailed] = useState(false)
+  const [stepsError, setStepsError] = useState(null)
 
   const activeCase = useMemo(
     () => state?.cases?.find((c) => c.id === activeId) ?? null,
     [state, activeId],
   )
+
+  // Steps load per case, on open. The in-flight set keeps a refresh (each mark
+  // triggers one) from firing a second fetch for the same case.
+  const hydrating = useRef(new Set())
+  useEffect(() => {
+    if (!plan || !activeCase || activeCase.steps_loaded) return
+    const key = `${plan}::${activeCase.id}`
+    if (hydrating.current.has(key)) return
+    hydrating.current.add(key)
+    setStepsError(null)
+    fetchCaseSteps(plan, activeCase.id)
+      .then(() => refresh?.())
+      .catch((e) => setStepsError(e.message))
+      .finally(() => hydrating.current.delete(key))
+  }, [plan, activeCase, refresh])
   const summary = state?.summary ?? { total: 0, passed: 0, failed: 0, blocked: 0, unmarked: 0 }
   const anyMarked = summary.total - summary.unmarked > 0
   const agentRunning = state?.cases?.some((c) => c.manual.agent_status === 'running')
-  const pushEnabled = state?.qmetry_configured && anyMarked && !agentRunning && !pushing
+  // A library test case has no execution to write into, so there is nothing to
+  // push — the control is absent rather than present-but-disabled.
+  const standalone = Boolean(state?.standalone)
+  const pushEnabled =
+    state?.qmetry_configured && !standalone && anyMarked && !agentRunning && !pushing
   const [choosing, setChoosing] = useState(false)
 
   async function handlePush(mode) {
@@ -73,6 +93,14 @@ export default function ManualView({ plan, planLabel, state, error, loading, ref
         <div role="alert" className="toast-error">
           Could not load cycle {planLabel ?? plan}: {error}
         </div>
+      ) : stepsError ? (
+        <div role="alert" className="toast-error">
+          Could not load the steps for {activeId}: {stepsError}
+        </div>
+      ) : activeCase && !activeCase.steps_loaded ? (
+        <p className="manual-empty">
+          Loading steps for <span className="mono">{activeCase.id}</span>…
+        </p>
       ) : activeCase ? (
         <ManualCase plan={plan} testCase={activeCase} onChanged={refresh} />
       ) : (
@@ -82,9 +110,14 @@ export default function ManualView({ plan, planLabel, state, error, loading, ref
       <footer className="stage-foot">
         <span className={`status-line ${pushFailed ? 'error' : ''}`}>
           <span className={`status-dot ${pushFailed ? 'fail' : state?.qmetry_configured ? 'done' : 'idle'}`} />
-          {pushMsg ?? (state?.qmetry_configured ? 'Marks save as you go.' : 'QMetry not connected — marks are local.')}
+          {pushMsg ??
+            (standalone
+              ? 'Library test case — marks and agent runs stay local, nothing is written to QMetry.'
+              : state?.qmetry_configured
+                ? 'Marks save as you go.'
+                : 'QMetry not connected — marks are local.')}
         </span>
-        {pushing ? (
+        {standalone ? null : pushing ? (
           <button type="button" className="btn btn-primary" disabled aria-busy="true">
             <span className="spinner" aria-hidden="true" />
             Pushing…

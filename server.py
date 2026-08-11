@@ -269,19 +269,77 @@ async def get_config() -> dict:
 
 
 @app.get("/cycles")
-async def list_cycles(limit: int = 50) -> dict:
-    """Newest-first QMetry cycles for the picker; empty in fixture mode.
+async def list_cycles(q: str = "", start: int = 0, limit: int = 50) -> dict:
+    """One page of newest-first QMetry test runs; empty in fixture mode.
 
-    QMetry exposes no cycle name — entries are {id, key} only.
+    `q` is pushed down to QMetry's own substring filter on the run name, so the
+    console searches all 400-odd runs rather than the page it happens to hold.
+    Entries are {id, key, name}.
     """
     if not _qmetry_configured():
-        return {"cycles": []}
+        return {
+            "cycles": [], "total": 0, "start": start, "limit": limit,
+            "next_start": start, "truncated": False,
+        }
     try:
-        cycles = await _make_qmetry_client().list_test_cycles(max_results=limit)
+        page = await _make_qmetry_client().search_test_cycles(
+            query=q or None, start_at=start, max_results=limit
+        )
     except Exception as e:
         log.exception("Could not list QMetry cycles")
         raise HTTPException(502, f"Could not list cycles: {e}")
-    return {"cycles": cycles}
+    return {
+        "cycles": page["rows"],
+        "total": page["total"],
+        "start": start,
+        "limit": limit,
+        # Advance by what QMetry returned, not by how many rows survived
+        # filtering — otherwise the next page skips or repeats rows.
+        "next_start": start + page.get("page_size", len(page["rows"])),
+        # True when a multi-term search stopped scanning at its cap, so `total`
+        # is a floor rather than the exact count.
+        "truncated": page.get("truncated", False),
+    }
+
+
+@app.get("/testcases")
+async def list_project_testcases(q: str = "", start: int = 0, limit: int = 50) -> dict:
+    """One page of the project's whole test case library; empty in fixture mode.
+
+    The library is thousands of cases, so this is always paged and `q` is
+    QMetry-side. Entries are {id, key, name}; `plan_key` is the synthetic
+    one-case plan key to open the case with (see agent/qmetry.py).
+    """
+    if not _qmetry_configured():
+        return {
+            "cases": [], "total": 0, "start": start, "limit": limit,
+            "next_start": start, "truncated": False,
+        }
+    from agent.qmetry import standalone_plan_key
+
+    try:
+        page = await _make_qmetry_client().search_project_test_cases(
+            query=q or None, start_at=start, max_results=limit
+        )
+    except Exception as e:
+        log.exception("Could not list QMetry test cases")
+        raise HTTPException(502, f"Could not list test cases: {e}")
+    return {
+        "cases": [
+            {
+                "id": r["id"],
+                "key": r["key"],
+                "name": r["name"],
+                "plan_key": standalone_plan_key(r["key"]),
+            }
+            for r in page["rows"]
+        ],
+        "total": page["total"],
+        "start": start,
+        "limit": limit,
+        "next_start": start + page.get("page_size", len(page["rows"])),
+        "truncated": page.get("truncated", False),
+    }
 
 
 @app.post("/runs")
@@ -343,7 +401,10 @@ async def push_run_to_qmetry(run_id: str, body: PushBody | None = None) -> dict:
         raise HTTPException(409, "Run is not finished yet")
 
     source = _make_case_source()
-    src_cases = {c["id"]: c for c in await source.list_cases(state.plan.key)}
+    # Only the QMetry ids are needed here — the step text comes from the run.
+    src_cases = {
+        c["id"]: c for c in await source.list_cases(state.plan.key, with_steps=False)
+    }
 
     from agent.qmetry import QMetryClient, QMetryError, write_case_execution
 
@@ -396,12 +457,67 @@ async def get_manual(plan: str) -> dict:
     source = _make_case_source()
     try:
         meta = await source.get_plan(plan)
-        cases = await source.list_cases(plan)
+        # Steps-less: one QMetry call for the whole run instead of one per case.
+        # The console fetches the steps of the case the tester opens.
+        cases = await source.list_cases(plan, with_steps=False)
     except Exception as e:
         log.exception("Could not load manual plan %s", plan)
         raise HTTPException(502, f"Could not load plan from source: {e}")
-    session = MANUAL.build(plan, meta.get("name", plan), cases, _qmetry_configured())
+    from agent.qmetry import is_standalone_plan
+
+    session = MANUAL.build(
+        plan,
+        meta.get("name", plan),
+        cases,
+        _qmetry_configured(),
+        standalone=is_standalone_plan(plan),
+        display_key=meta.get("key") or plan,
+    )
+
+    # Un-stick cases left mid-run. `agent_status: "running"` is persisted, but
+    # the run state that would finish it lives in memory — so a crash, a kill or
+    # a restart strands the case as "running" forever, which disables both Run
+    # and Push for it. If the run id isn't one this process owns, the run is
+    # gone and cannot come back.
+    for case in session.cases:
+        if case.mark.agent_status == "running" and case.mark.agent_run_id not in RUNS:
+            note = case.mark.agent_note or ""
+            suffix = f"Agent run {case.mark.agent_run_id}: interrupted (server restarted)"
+            MANUAL.set_agent(
+                plan, case.id, None, case.mark.agent_run_id,
+                agent_note=f"{note}\n{suffix}".strip() if note else suffix,
+            )
+            log.info("Cleared stranded 'running' agent status on %s/%s", plan, case.id)
+
     return session.to_dict()
+
+
+@app.get("/manual/{plan}/cases/{case_id}/steps")
+async def get_manual_case_steps(plan: str, case_id: str) -> dict:
+    """Fetch one case's steps on demand and return the updated case.
+
+    Idempotent and cached in the case source, so re-opening a case costs
+    nothing. Requires the session to exist (GET /manual/{plan} first).
+    """
+    session = MANUAL.get(plan)
+    if session is None:
+        raise HTTPException(404, f"No manual session for plan {plan!r}; GET it first")
+    try:
+        case = session.find_case(case_id)
+    except KeyError as e:
+        raise HTTPException(404, str(e))
+    if case.steps_loaded:
+        return case.to_dict()
+
+    source = _make_case_source()
+    try:
+        steps = await source.get_case_steps(plan, case_id)
+        # Free after the steps call — it came back in the same response.
+        test_data = await source.get_case_test_data(plan, case_id)
+    except Exception as e:
+        log.exception("Could not load steps for %s/%s", plan, case_id)
+        raise HTTPException(502, f"Could not load steps: {e}")
+    return MANUAL.set_steps(plan, case_id, steps, test_data).to_dict()
 
 
 @app.post("/manual/{plan}/cases/{case_id}/mark")
@@ -526,6 +642,15 @@ async def push_manual_to_qmetry(plan: str, body: PushBody | None = None) -> dict
     """
     if not _qmetry_configured():
         raise HTTPException(409, "QMetry is not configured — set QMETRY_API_KEY first")
+
+    from agent.qmetry import is_standalone_plan
+
+    if is_standalone_plan(plan):
+        raise HTTPException(
+            409,
+            "A standalone test case has no execution to write to — open it "
+            "through a test run to record results in QMetry",
+        )
 
     session = MANUAL.get(plan)
     if session is None:

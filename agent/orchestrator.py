@@ -119,10 +119,14 @@ class Orchestrator:
         in any prompt/context string or run_state — it only reaches
         `BrowserSession.credentials`, which `login()` reads directly.
         """
-        cases = await self.case_source.list_cases(plan_key)
+        # Steps-less list, then hydrate just this case: fetching every case's
+        # steps to run one of them costs a QMetry call per case in the cycle.
+        cases = await self.case_source.list_cases(plan_key, with_steps=False)
         match = next((c for c in cases if c["id"] == case_id), None)
         if match is None:
             raise KeyError(f"No fixture case with id {case_id!r}")
+        if not match.get("_steps_loaded"):
+            match["steps"] = await self.case_source.get_case_steps(plan_key, case_id)
         plan = await self.case_source.get_plan(plan_key)
         state = new_run_state(plan["key"], plan["name"])
         state.add_case(TestCase(id=match["id"], name=match["name"]))
@@ -269,7 +273,12 @@ class Orchestrator:
         """
         if orig_index is None:
             orig_index = step_index
+        # The model needs the step's test data folded into the instruction (those
+        # are the values it must type). The console keeps them apart so it can
+        # label them per step — hence the re-join here rather than in the source.
         action_text = step["action"]
+        if step.get("test_data"):
+            action_text = f"{action_text}\nTest data: {step['test_data']}"
         expected = step.get("expected", "")
 
         rs_step = Step(action=action_text, detail="translating…", status="running")

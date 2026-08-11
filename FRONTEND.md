@@ -117,19 +117,87 @@ scroll or capped-height list), stage below.
 ## Components
 
 ### 1. Rail (`.rail`) — navy
-- **Brand block**: white rounded shield containing the Duke wordmark + "QA Agent" /
-  "Sous Chef Cloud" subtitle. Use the actual Duke logo asset (place at
-  `frontend/public/duke-logo.png`) rather than text when available.
-- **Plan meta**: when QMetry is configured, a **cycle picker** (`select`, mono,
-  translucent-white on navy) listing the newest cycles from `GET /cycles`
-  (keys only — QMetry exposes no cycle names); choosing one loads that cycle
-  and rewrites `?cycle=` in the URL without a reload. In fixture mode the
-  picker is hidden and the static plan key shows instead. Below it: a one-line
-  description and a thin progress bar (white fill on translucent track) with
-  `done / total` and `%` in mono.
+- **Brand block**: white rounded tile containing the Duke shield + "QA Agent" /
+  "Sous Chef Cloud" subtitle. Use the actual Duke logo asset
+  (`frontend/public/duke-logo.png`) rather than text when available. The tile is
+  **landscape** (58x40), matching the artwork's ~1.5:1 shield — a square tile
+  shrank it to an illegible smudge. The asset must have a **transparent**
+  background; a version shipped with an opaque black field rendered the white
+  tile as a black box.
+The rail has **two states**: *browse* (nothing open, or a library test case open)
+and *drilled in* (a test run open). The brand block is present in both.
+
+#### Browse state — `<CaseBrowser>` (`.browser`)
+QMetry holds ~430 test runs and ~2500 test cases. Neither list can be loaded
+whole, so the rail browses one page at a time and search is server-side.
+
+- **Mode picker** (`.browser-pick`): a `Browse` label + a single `<select>` with
+  "Test runs" / "Test cases". A **select, not side-by-side tabs** — the two are
+  alternatives, not things to compare, so one control gives one answer. Test runs
+  is the default. Style the `option`s explicitly (`--ink` on `--white`): the popup
+  is drawn by the OS and inherits nothing from the navy rail.
+- **Search** (`.browser-search`): translucent-white on navy with a `⌕` icon on
+  the left and, once there's text, a round `✕` clear button on the right. Use
+  `type="text"`, **not** `type="search"` — Chrome's native search decoration
+  draws an off-palette glyph that reads as a broken dropdown arrow. Below the
+  empty field, a hint shows what's accepted (`e.g. delete recipe, or TC-2075`).
+  Debounced 300ms, then re-queried server-side via `?q=` — it is **not** a filter
+  over the loaded page, so a search covers the whole project. Switching TR↔TC
+  clears the query.
+- **Never show a count and a loading message at once.** "Loading…" beside
+  `0 of 0` reads as a failed search. The empty-state line ("No test cases match
+  …") appears only once a request has settled; while one is in flight the list
+  shows a spinner and `Searching…`.
+
+#### What search accepts
+QMetry's own search is a single case-insensitive substring on one field, with no
+AND and no wildcards, and it silently **ignores** filter keys it doesn't know
+(an `and: [...]` filter returns the entire project — worse than an error). The
+backend therefore handles three query shapes; the frontend just sends `?q=`:
+
+| Query | Behaviour |
+|---|---|
+| `2075`, `TC-2075`, `tc 2075`, `SOUSCLOUD-TC-2075` | exact key lookup — a key never appears in a name, so a substring search would find nothing |
+| `regression` | straight substring; exact totals, one call |
+| `delete recipe` | terms ANDed, **order-independent**. `total` is exact unless `truncated` is set, which means the scan hit its cap — render it as `N of TOTAL+` |
+- **Results** (`.browser-results`): each row (`.browser-row`) **stacks** the
+  **full** key in mono (`SOUSCLOUD-TC-2075`, not a shortened `TC-2075` — testers
+  refer to cases by the whole key) above the name, which is clamped to **two
+  lines**. Not one line: run names share long prefixes ("Sous Chef Cloud
+  vX.X.X — …"), so single-line truncation makes different runs read identically.
+  Full `key — name` in the row's `title`. No status dot: neither runs nor library
+  cases have a marking status until opened.
+- **Foot** (`.browser-foot`): `N of TOTAL` in mono on the left, a `Load more`
+  button on the right when more remain. Never silently truncate — the count is
+  always visible.
+- Picking a **TR** drills the rail in. Picking a **TC** opens that one case in
+  the stage and **leaves the browser up**, so the tester can walk the list.
+
+#### Drilled-in state (a test run is open)
+- **Back link** (`.rail-back`): "← All test runs", returns to browse and clears
+  the URL params.
+- **Plan meta**: the run's human key (mono) and its real name — cycles *do* have
+  a name; it arrives as `summary` when the query asks for the field. Below it a
+  thin progress bar (white fill on translucent track) with `done / total` and `%`
+  in mono.
 - **Test case list**: each row = status dot + ID (mono) + name (truncated). Status
   dot states: `queued` (dashed border), `run` (pulsing white dot), `pass` (solid
   green ✓), `fail` (solid red ✕). Active row gets a translucent white background.
+
+#### Catalogue endpoints
+Both return the same page shape; only the array key differs.
+
+```
+GET /cycles?q=&start=0&limit=50    -> { cycles: [{id, key, name}], total, start, limit, next_start, truncated }
+GET /testcases?q=&start=0&limit=50 -> { cases:  [{id, key, name, plan_key}], total, start, limit, next_start, truncated }
+```
+
+`plan_key` is the synthetic one-case plan (`TC:<key>`) the console opens a
+library case with. Both return empty lists (total 0) in fixture mode.
+
+**`Load more` must use `next_start`, never `items.length`.** A page can return
+more rows than it yields — the server drops rows it won't show — so counting
+kept rows drifts off QMetry's offset and silently skips records.
 
 ### 2. Stage head (`.stage-head`)
 - Active test case ID in a navy-soft pill (mono) + the case name (Inter 16/600).
@@ -263,28 +331,45 @@ separate state object from the agent server.
 
 ### Clean start state
 
-Nothing loads until the tester explicitly picks a test run — no cycle
-auto-loads, even when `GET /config` returns a `default_cycle`. With no
-`?cycle=` in the URL and no cycle chosen yet in-session, `App.jsx` computes
-`manualPlanKey = chosenCycle || cycleParam || null`; when it's `null`:
+Nothing loads until the tester explicitly picks something — nothing
+auto-loads, even when `GET /config` returns a `default_cycle`. With no `?cycle=`
+/ `?tc=` in the URL and nothing chosen yet in-session, `App.jsx` has
+`manualPlanKey = null`; then:
 
 - The stage area shows `<StartPanel>` on **both** tabs instead of
   ManualView/Live run — Duke shield, "QA Agent" title, "Choose a test run to
-  begin", a hint pointing at the **Plan** dropdown in the rail, a
-  paste-cycle-id input + Open button, and — only when `default_cycle` is
-  non-null — a "Continue with `<key>`" button.
+  begin", a hint pointing at the rail's TR/TC search, a paste-cycle-id input +
+  Open button, and — only when `default_cycle` is non-null — a "Continue with
+  `<key>`" button.
 - No `/manual/*` request is made (`useManualState` is a no-op when its plan
   key is `null` — it never falls back to a fixture).
-- The rail's cycle `<select>` shows a disabled placeholder
-  `— choose test run —` as the selected option, the case list area is empty
-  (no "No cases loaded." text), and progress reads 0/0.
-- `GET /config` and `GET /cycles` still fire — they feed the Continue button
-  and the rail dropdown respectively.
+- The rail sits in its browse state; progress and the case list belong to the
+  drilled-in state and aren't rendered at all.
+- `GET /config` fires (it feeds the Continue button), as does the first
+  catalogue page.
 
-Picking a cycle (dropdown, paste + Open, or Continue) calls the same
-`handleSelectCycle`, which rewrites the URL to `?cycle=<idOrKey>` and loads it
-exactly as a bookmarked link would. A direct `?cycle=` link bypasses the start
-panel entirely and behaves as it always has.
+Picking a run (rail row, paste + Open, or Continue) rewrites the URL to
+`?cycle=<idOrKey>`; picking a library case writes `?tc=<case key>`. Both load
+exactly as a bookmarked link would, and a direct link bypasses the start panel.
+
+### Deferred steps
+
+Fetching a case's steps costs one QMetry call **per case**, so a run's cases
+arrive without them and each case carries `steps_loaded`. When the tester opens
+a case with `steps_loaded: false`, `ManualView` calls
+`GET /manual/{plan}/cases/{id}/steps` once (guarded by an in-flight set, since
+every mark triggers a refresh), then refreshes. Until it resolves the stage
+shows "Loading steps for `<id>`…" — never an empty step list, which would let
+the tester start an agent run with nothing selected.
+
+### Standalone (library) test cases
+
+A `TC:`-prefixed plan holds exactly one case, opened straight from the project
+library. It has no QMetry execution behind it, so `standalone: true` comes back
+in the session and the console **omits** the push control rather than disabling
+it, with the status line reading "Library test case — marks and agent runs stay
+local, nothing is written to QMetry." Marking and agent runs work normally.
+`POST /manual/{plan}/push-qmetry` on such a plan is a 409 server-side too.
 
 `GET /manual/{plan}` returns:
 
@@ -292,14 +377,17 @@ panel entirely and behaves as it always has.
 {
   "plan": { "key": "SOUSCLOUD-TP-45", "name": "Inventory · smoke test" },
   "qmetry_configured": false,
+  "standalone": false,
   "cases": [
     {
       "id": "IRHS-R-01",
       "name": "Create inventory recipe",
-      "steps": [{ "action": "…", "expected": "…" }],
+      "steps": [{ "action": "…", "expected": "…", "test_data": "" }],
+      "steps_loaded": true,
+      "test_data": [{ "name": "User Role", "value": "Admin" }],
       "precondition": "",
       "manual": {
-        "status": "unmarked",        // unmarked | pass | fail | blocked — DERIVED from step_marks server-side, never set directly by the UI
+        "status": "unmarked",        // unmarked | pass | fail | blocked — set server-side: the agent run's verdict, or derived from step_marks when a human has ruled. Never set directly by the UI.
         "comment": "",
         "failed_steps": [],           // step indices marked fail — derived, kept for back-compat
         "step_marks": {},              // "<step index>": {status: pass|fail|blocked|skip, note, agent_status, overrode}
@@ -323,9 +411,13 @@ appears in this payload.
 ### Endpoints the Manual tab calls
 - `GET  /config` → `{ "default_cycle": "<idOrKey>" | null }` — the cycle the
   console opens when the URL has no `?cycle=` (from `QMETRY_DEFAULT_CYCLE`).
-- `GET  /cycles` → `{ "cycles": [{ "id", "key" }, …] }` — newest QMetry cycles
-  for the rail's picker; `[]` in fixture mode (picker hidden).
-- `GET  /manual/{plan}` → the state above.
+- `GET  /cycles?q=&start=&limit=` and `GET /testcases?q=&start=&limit=` → one
+  page of the rail's catalogue (shapes above); empty in fixture mode.
+- `GET  /manual/{plan}` → the state above. `{plan}` is a cycle id/key, or
+  `TC:<case key>` for a single library case.
+- `GET  /manual/{plan}/cases/{id}/steps` → the same case dict with its steps
+  filled in and `steps_loaded: true`. Idempotent; 404 without a built session
+  or for an unknown case.
 - `POST /manual/{plan}/cases/{id}/mark` body `{status, comment, failed_steps}` → updated case.
   The UI now only uses this to save the overall Notes text — it always sends
   back the case's current (server-derived) `status` and `failed_steps`
@@ -355,34 +447,53 @@ appears in this payload.
   already finished). Used by the Manual tab's per-case agent run (see "Cancelling a
   run" below); the Live tab does not use it.
 
-### Marking UX
-- Marking is **per step**, not per case. Each step shows four small buttons —
-  Pass / Fail / Blocked / Skip — beside its agent chip (if any).
-  - Clicking a status that matches the chip's verdict (or there is no chip)
-    saves immediately via `POST .../steps/{i}/mark`.
-  - Clicking a status that contradicts the chip opens an inline field —
-    "Why override the AI assessment?" — with a Save button that stays
-    disabled until the note is non-empty. Saving posts the override with the
-    note; the backend also records it to a knowledge file so future agent
-    runs of that exact step see the tester's ruling.
-  - A saved mark renders as the active colored button (green pass / red fail
-    / amber blocked / neutral skip) plus the note text underneath.
-- The case header shows a **read-only** pill with the case's derived status
-  (`unmarked` | `pass` | `fail` | `blocked`) — computed server-side from the
-  step marks (fail > blocked > pass > unmarked). There is no case-level
-  Pass/Fail/Blocked control and no "problem here" step-flag checkbox anymore.
+### Case-level test data (`.manual-casedata`)
+Below the precondition, a case shows its own **Test data** — QMetry surfaces a
+parameterised case's parameter table under that name, as `name = value` pairs
+(`User Role = Admin`, `Menu = Recipe`). These are the values the steps' `[~id]`
+placeholders resolve to, so the block is what makes a *shared* step ("log in as
+X") legible for this particular case.
+
+Unlike the per-step field, the block is **omitted entirely** when a case has no
+parameters (most don't) rather than showing "none" — there's no ambiguity to
+resolve at case level. It arrives with the steps, so it's empty until they
+hydrate.
+
+### Step display and verdicts
+- Each step shows, in order: the action, the expected result, its **test data**,
+  and the agent's verdict.
+- **Test data** (`.manual-step-data`) is per step — QMetry has a case-level
+  `testData` field but it is always null, so the value comes from each step. The
+  label is shown on **every** step, with an italic `none` when there isn't any: a
+  blank row would leave a tester unable to tell "nothing to enter" from "didn't
+  load".
+- **There are no Pass / Fail / Blocked / Skip buttons.** The agent's verdict is
+  the indication that matters, so each step renders a read-only
+  `agent: pass` / `agent: fail` chip (`.step-verdict`) with the evaluator's
+  reason beside it. The verdict comes from the live run's tape when there is one,
+  falling back to `step_marks[i].agent_status` so it survives a refresh.
+- The case header shows a **read-only** status pill. With no mark buttons, that
+  status comes from the agent's own verdict — `ManualStore.set_agent` writes it
+  onto the case when a run finishes `pass`/`fail`/`blocked`. Any pre-existing
+  hand step-mark still wins (a human ruling outranks the AI), and a run still in
+  flight is not a verdict.
 - An overall Notes textarea is always visible under the step list; it saves
-  on blur via `POST .../mark`, sending the case's current derived status back
-  unchanged — the note is the only thing that endpoint still sets from the UI.
+  on blur via `POST .../mark`, sending the case's current status back unchanged —
+  the note is the only thing that endpoint still sets from the UI.
+- **The "Agent notes" panel is not rendered.** It restated every step's verdict
+  as one long wall of text directly under the steps that already showed them.
+  `agent_note` is still recorded server-side and still goes into the QMetry
+  comment on push — only the on-screen block is gone.
 - "Push results to QMetry" is disabled during an agent run, when nothing is marked,
   and when `qmetry_configured` is false (shows "Connect QMetry to push results").
+  Since the agent verdict now sets the status, finishing a run is what unlocks it.
 - Each step also has an "agent" checkbox (all checked by default). "Run selected
   steps with agent" executes only the checked steps in a fresh browser session; a
   muted hint reads "The agent starts from the dashboard after login — do unchecked
   earlier steps by hand first."
-- After the run, executed steps show an informational chip — `agent: pass` /
-  `agent: fail` (evaluator reason on hover). The chip is only ever a hint for the
-  per-step mark buttons above — it never sets a status by itself.
+- The agent-run tape below the case shows the executed steps only. It does **not**
+  repeat a verdict row — every step in the list above already carries its chip,
+  and showing both was duplicate UI.
 - Credentials row carries helper copy — "Leave blank to use the system admin
   account." — under the Login-as inputs, stating the existing default-admin
   fallback (empty/cleared credentials already run as the `.env` admin).
