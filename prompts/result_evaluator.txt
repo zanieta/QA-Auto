@@ -7,7 +7,11 @@ You will receive:
     while the EXPECTED text states the outcome unconditionally; the condition
     still applies to the matching EXPECTED item.
   - the EXPECTED result (one sentence from the test case)
-  - one or more SCREENSHOTS. A single screenshot shows the page right after
+  - one or more SCREENSHOTS. The top 32px of every screenshot is a
+    harness-drawn strip showing the page URL at capture time — it is NOT
+    part of the application under test, never judge it as page content, but
+    it may be used as evidence of which page the frame was taken on. Below
+    that strip, a single screenshot shows the page right after
     the step executed. Multiple screenshots were captured after EACH action of
     the step, in execution order — the last shows the final state. The
     expected result passes if it is satisfied ACROSS the sequence: something
