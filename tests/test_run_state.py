@@ -143,7 +143,14 @@ def test_fixture_matches_documented_shape():
     assert set(data["plan"].keys()) >= {"key", "name"}
     assert set(data["summary"].keys()) >= {"total", "passed", "failed"}
     for case in data["test_cases"]:
-        assert {"id", "name", "status", "steps"}.issubset(case.keys())
+        assert {
+            "id",
+            "name",
+            "status",
+            "precondition",
+            "test_data",
+            "steps",
+        }.issubset(case.keys())
         assert case["status"] in {"queued", "running", "pass", "fail", "blocked"}
         for step in case["steps"]:
             assert {
@@ -153,5 +160,19 @@ def test_fixture_matches_documented_shape():
                 "evaluation",
                 "duration_seconds",
                 "screenshot_b64",
+                "test_data",
             }.issubset(step.keys())
             assert step["status"] in {"running", "pass", "fail", "blocked"}
+
+
+def test_frontend_fixture_copy_is_identical():
+    """The copy Vite serves in dev (frontend/public/fixtures/) must match the
+    backend's fixture exactly, or the console renders stale/wrong shape in
+    dev mode. Compare parsed JSON — the repo has CRLF/LF differences between
+    files elsewhere, so a raw byte compare would be a false negative here."""
+    root = Path(__file__).resolve().parent.parent
+    backend = json.loads((root / "fixtures" / "sample_run_state.json").read_text(encoding="utf-8"))
+    frontend = json.loads(
+        (root / "frontend" / "public" / "fixtures" / "sample_run_state.json").read_text(encoding="utf-8")
+    )
+    assert backend == frontend
