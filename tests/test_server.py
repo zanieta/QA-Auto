@@ -1315,9 +1315,46 @@ def test_get_run_never_exposes_credentials(client):
         r = client.post(
             "/runs", json={"plan": "P", "username": "qa@duke", "password": "s3cret"}
         )
+    # POST /runs itself must not echo the credentials it just recorded.
+    assert "s3cret" not in r.text
+    assert "qa@duke" not in r.text
     body = client.get(f"/runs/{r.json()['run_id']}").text
     assert "s3cret" not in body
     assert "qa@duke" not in body
+
+
+def test_post_runs_malformed_body_never_echoes_password(client):
+    """A validation 422 (missing `plan`) must not echo the plaintext password.
+
+    Pydantic v2's `missing` error attaches the whole request body as `input`,
+    and FastAPI's default handler serializes it verbatim — so a malformed
+    POST /runs would otherwise leak the password straight back in the 422
+    body. Assert on .text (the serialized wire body), not .json()["detail"],
+    since the point is that the secret is nowhere in the response at all.
+    """
+    r = client.post(
+        "/runs", json={"username": "qa@duke", "password": "s3cretLEAK"}
+    )
+    assert r.status_code == 422
+    assert "s3cretLEAK" not in r.text
+
+
+def test_run_credentials_cleared_when_run_plan_crashes():
+    """The finally in _run_in_background must clear RUN_CREDENTIALS even when
+    orch.run_plan raises — otherwise a crashed run leaves a credential resident."""
+
+    class CrashingOrch:
+        async def run_plan(self, plan_key, credentials=None, case_credentials=None):
+            raise RuntimeError("boom")
+
+    with patch.object(server_mod, "_build_orchestrator", lambda on_update: CrashingOrch()):
+        state = new_run_state("P")
+        server_mod.RUN_CREDENTIALS[state.run_id] = ("qa@duke", "pw")
+        import asyncio
+
+        asyncio.run(server_mod._run_in_background(state.run_id, "P", state))
+
+    assert state.run_id not in server_mod.RUN_CREDENTIALS
 
 
 @pytest.mark.asyncio

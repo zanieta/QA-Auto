@@ -23,8 +23,10 @@ from pathlib import Path
 from typing import Literal
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse
@@ -128,6 +130,23 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.exception_handler(RequestValidationError)
+async def _validation_error_without_credentials(
+    request: Request, exc: RequestValidationError
+) -> JSONResponse:
+    """Same 422 shape as FastAPI's default handler, minus the raw request body.
+
+    Pydantic v2 attaches the offending object as each error's `input`, and the
+    default handler serializes it verbatim — so a malformed POST /runs (e.g.
+    missing `plan`) would otherwise echo `username`/`password` straight back
+    in the response body. Strip `input` from every error entry; status code
+    and the `detail` list shape are unchanged so existing clients/tests
+    (which only assert on status_code) keep working.
+    """
+    errors = [{k: v for k, v in err.items() if k != "input"} for err in exc.errors()]
+    return JSONResponse(status_code=422, content={"detail": errors})
 
 
 @app.middleware("http")
