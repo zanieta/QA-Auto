@@ -149,3 +149,27 @@ def test_bugs_from_failed_run_skips_non_failures():
     assert bugs[0]["summary"].startswith("[QA Agent] B — bravo")
     assert "No dialog" in bugs[0]["description"]
     assert "Plan X" in bugs[0]["description"]
+
+
+def test_bugs_from_failed_run_includes_step_test_data():
+    """Slice 3 separated test_data from step.action; the Jira bug must still
+    say WHAT to type, not just the verb, or the bug is unactionable."""
+    state = new_run_state("X", "Plan X")
+    state.add_case(TestCase(id="B", name="bravo", status="fail", steps=[
+        Step(action="Fill recipe name", detail="fill [data-test=recipe-name]",
+             status="fail", evaluation="Field rejected input",
+             duration_seconds=1.0, test_data="Grilled Salmon"),
+    ]))
+    bugs = bugs_from_failed_run(state)
+    assert len(bugs) == 1
+    assert "Test data: Grilled Salmon" in bugs[0]["description"]
+
+
+def test_bugs_from_failed_run_omits_test_data_line_when_absent():
+    state = new_run_state("X", "Plan X")
+    state.add_case(TestCase(id="B", name="bravo", status="fail", steps=[
+        Step(action="Click", detail="click #x", status="fail",
+             evaluation="No dialog", duration_seconds=2.5),
+    ]))
+    bugs = bugs_from_failed_run(state)
+    assert "Test data:" not in bugs[0]["description"]

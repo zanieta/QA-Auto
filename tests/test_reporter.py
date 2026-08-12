@@ -59,6 +59,28 @@ def test_render_escapes_user_text():
     assert "&lt;script&gt;" in out
 
 
+def test_render_includes_step_test_data():
+    """Slice 3 separated test_data from step.action; the reporter must still
+    surface it so a bug/report row states WHAT to type, not just the verb."""
+    state = new_run_state("X")
+    state.add_case(TestCase(id="A", name="Alpha", status="pass", steps=[
+        Step(action="Fill recipe name", detail="fill [data-test=recipe-name]",
+             status="pass", evaluation="Accepted", duration_seconds=0.5,
+             test_data="Grilled Salmon"),
+    ]))
+    state.start_run()
+    state.finish()
+    out = _render(state)
+    assert "Test data" in out
+    assert "Grilled Salmon" in out
+
+
+def test_render_omits_test_data_row_when_absent():
+    state = _state_with_results()  # steps have no test_data
+    out = _render(state)
+    assert "Test data" not in out
+
+
 def test_generate_report_writes_html_file(tmp_path, monkeypatch):
     state = _state_with_results()
     monkeypatch.setattr("agent.reporter.REPORTS_DIR", tmp_path)

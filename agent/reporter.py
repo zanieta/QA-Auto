@@ -150,9 +150,15 @@ def _render_step_row(step) -> str:
         else "—"
     )
     eval_html = html.escape(step.evaluation or "—")
+    action_html = html.escape(step.action)
+    if step.test_data:
+        action_html += (
+            f'<br><span class="mono" style="color:#6a7290">'
+            f"Test data: {html.escape(step.test_data)}</span>"
+        )
     return f"""
 <tr>
-  <td>{html.escape(step.action)} <span class="badge {step.status}" style="margin-left:6px">{step.status}</span></td>
+  <td>{action_html} <span class="badge {step.status}" style="margin-left:6px">{step.status}</span></td>
   <td class="mono">{html.escape(step.detail or "—")}</td>
   <td class="eval {step.status}">{eval_html}</td>
   <td class="duration">{duration}</td>

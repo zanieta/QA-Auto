@@ -225,6 +225,10 @@ def _format_bug_description(state: RunState, case: TestCase) -> str:
         lines += [
             "Failing step:",
             f"  Action: {failing.action}",
+        ]
+        if failing.test_data:
+            lines.append(f"  Test data: {failing.test_data}")
+        lines += [
             f"  Detail: {failing.detail or '—'}",
             f"  Evaluation: {failing.evaluation or '—'}",
             f"  Duration: {failing.duration_seconds or 0:.2f}s",
