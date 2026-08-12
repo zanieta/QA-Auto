@@ -91,9 +91,17 @@ class Orchestrator:
             self.on_update(state)
             raise
 
-        # Pre-populate the rail so the tester can see what's coming.
+        # Pre-populate the rail so the tester can see what's coming. Precondition
+        # and case test data ride along from the case list — no extra QMetry call.
         for c in cases:
-            state.add_case(TestCase(id=c["id"], name=c["name"]))
+            state.add_case(
+                TestCase(
+                    id=c["id"],
+                    name=c["name"],
+                    precondition=c.get("precondition") or None,
+                    test_data=list(c.get("test_data") or []),
+                )
+            )
 
         state.start_run()
         self.on_update(state)
@@ -139,7 +147,14 @@ class Orchestrator:
             match["steps"] = await self.case_source.get_case_steps(plan_key, case_id)
         plan = await self.case_source.get_plan(plan_key)
         state = new_run_state(plan["key"], plan["name"])
-        state.add_case(TestCase(id=match["id"], name=match["name"]))
+        state.add_case(
+            TestCase(
+                id=match["id"],
+                name=match["name"],
+                precondition=match.get("precondition") or None,
+                test_data=list(match.get("test_data") or []),
+            )
+        )
         state.start_run()
         self.on_update(state)
         try:
@@ -297,7 +312,15 @@ class Orchestrator:
             action_text = f"{action_text}\nTest data: {step['test_data']}"
         expected = step.get("expected", "")
 
-        rs_step = Step(action=action_text, detail="translating…", status="running")
+        # The model gets action + test data joined (action_text); the tape keeps
+        # them apart so the console can label test data per step, exactly as the
+        # Manual panel does.
+        rs_step = Step(
+            action=step["action"],
+            detail="translating…",
+            status="running",
+            test_data=step.get("test_data") or None,
+        )
         state.add_step(case_id, rs_step)
         self.on_update(state)
         start = time.monotonic()

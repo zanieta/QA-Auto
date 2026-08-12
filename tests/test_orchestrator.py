@@ -1033,3 +1033,67 @@ async def test_launch_delay_of_zero_never_sleeps(monkeypatch):
     monkeypatch.setattr("agent.orchestrator.asyncio.sleep", fake_sleep)
     await _delay_orchestrator(launch_delay_s=0.0, headless=False).run_plan("X")
     assert slept == []
+
+
+# ---------- precondition / test_data pass-through ----------------------------
+
+
+def _passing_orchestrator(cases: list[dict]):
+    """Orchestrator over `cases` where every step translates and passes."""
+    n = sum(len(c["steps"]) for c in cases)
+    return Orchestrator(
+        azure=_fake_azure(
+            translate_side_effect=[_ok_actions() for _ in range(n)],
+            evaluate_side_effect=[{"status": "pass", "reason": "ok"} for _ in range(n)],
+        ),
+        browser_factory=_fake_browser,
+        case_source=FakeCaseSource({"key": "X", "name": "x"}, cases),
+        on_update=lambda s: None,
+    )
+
+
+@pytest.mark.asyncio
+async def test_run_plan_copies_precondition_and_case_test_data():
+    cases = [{
+        "id": "TC-1",
+        "name": "Edit inventory",
+        "precondition": "Signed in as Admin",
+        "test_data": [{"name": "Menu", "value": "Recipe"}],
+        "steps": [{"action": "Open the dashboard", "expected": "Dashboard loads"}],
+    }]
+    state = await _passing_orchestrator(cases).run_plan("X")
+    d = state.to_dict()["test_cases"][0]
+    assert d["precondition"] == "Signed in as Admin"
+    assert d["test_data"] == [{"name": "Menu", "value": "Recipe"}]
+
+
+@pytest.mark.asyncio
+async def test_step_test_data_is_separate_from_the_action_on_the_tape():
+    cases = [{
+        "id": "TC-1",
+        "name": "Create recipe",
+        "steps": [{
+            "action": "Type the recipe name",
+            "expected": "Name accepted",
+            "test_data": "Recipe A",
+        }],
+    }]
+    state = await _passing_orchestrator(cases).run_plan("X")
+    step_d = state.to_dict()["test_cases"][0]["steps"][0]
+    assert step_d["test_data"] == "Recipe A"
+    assert step_d["action"] == "Type the recipe name"
+    assert "Test data:" not in step_d["action"]
+
+
+@pytest.mark.asyncio
+async def test_cases_without_the_new_fields_still_run():
+    cases = [{
+        "id": "TC-1",
+        "name": "Bare case",
+        "steps": [{"action": "Open the dashboard", "expected": "Dashboard loads"}],
+    }]
+    state = await _passing_orchestrator(cases).run_plan("X")
+    d = state.to_dict()["test_cases"][0]
+    assert d["precondition"] is None
+    assert d["test_data"] == []
+    assert d["steps"][0]["test_data"] is None
