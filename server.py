@@ -67,12 +67,19 @@ LISTENERS: dict[str, list[asyncio.Queue]] = {}
 # Snapshot the latest state-dict per run so a late SSE subscriber sees the current
 # state immediately on connect.
 LATEST: dict[str, dict] = {}
+# run_id -> (username, password) for the lifetime of that run only. Never
+# serialized; deleted when the run ends.
+RUN_CREDENTIALS: dict[str, tuple[str, str]] = {}
 
 MANUAL = ManualStore()
 
 
 class StartRunBody(BaseModel):
     plan: str
+    # Run-level login override. Inbound only: held in memory for the run and
+    # never echoed in a response, snapshot, or SSE event. Both blank = .env admin.
+    username: str = ""
+    password: str = ""
 
 
 class MarkBody(BaseModel):
@@ -192,13 +199,36 @@ async def _run_in_background(run_id: str, plan_key: str, state: RunState) -> Non
         # The orchestrator builds its own RunState. We want it to write into the
         # already-registered state object so RUNS[run_id] stays the same ref.
         # Easiest: have the orchestrator return a fresh state and replace RUNS[run_id].
-        final = await orch.run_plan(plan_key)
+        final = await orch.run_plan(
+            plan_key,
+            credentials=RUN_CREDENTIALS.get(run_id),
+            case_credentials=_manual_case_credentials(plan_key),
+        )
         RUNS[run_id] = final
     except Exception:
         log.exception("Run %s crashed", run_id)
         # mark blocked so the UI shows something terminal
         state.finish()
         _make_on_update(run_id)(state)
+    finally:
+        RUN_CREDENTIALS.pop(run_id, None)
+
+
+def _manual_case_credentials(plan_key: str) -> dict[str, tuple[str, str]]:
+    """Per-case logins saved in the Manual tab, which outrank the run-level pair.
+
+    Kept here rather than in the orchestrator so agent/ never imports the
+    manual session store.
+    """
+    session = MANUAL.get(plan_key)
+    if session is None:
+        return {}
+    out: dict[str, tuple[str, str]] = {}
+    for case in session.cases:
+        mark = case.mark
+        if mark.login_username and mark.login_password:
+            out[case.id] = (mark.login_username, mark.login_password)
+    return out
 
 
 async def _run_agent_case(
@@ -354,6 +384,9 @@ async def start_run(body: StartRunBody) -> dict:
     RUNS[state.run_id] = state
     LATEST[state.run_id] = state.to_dict()
     LISTENERS.setdefault(state.run_id, [])
+
+    if body.username and body.password:
+        RUN_CREDENTIALS[state.run_id] = (body.username, body.password)
 
     task = asyncio.create_task(_run_in_background(state.run_id, body.plan, state))
     TASKS[state.run_id] = task

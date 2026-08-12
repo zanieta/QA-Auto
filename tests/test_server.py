@@ -23,11 +23,13 @@ def _clear_registries():
     server_mod.TASKS.clear()
     server_mod.LISTENERS.clear()
     server_mod.LATEST.clear()
+    server_mod.RUN_CREDENTIALS.clear()
     yield
     server_mod.RUNS.clear()
     server_mod.TASKS.clear()
     server_mod.LISTENERS.clear()
     server_mod.LATEST.clear()
+    server_mod.RUN_CREDENTIALS.clear()
 
 
 @pytest.fixture
@@ -1288,3 +1290,79 @@ def test_run_push_qmetry_no_body_falls_back_to_env(client, monkeypatch):
     r = client.post(f"/runs/{state.run_id}/push-qmetry")
     assert r.status_code == 200
     assert calls[0]["mode"] == "create"
+
+
+def test_post_runs_records_credentials_for_the_run(client):
+    with patch.object(server_mod, "_run_in_background", new=AsyncMock()):
+        r = client.post(
+            "/runs",
+            json={"plan": "SOUSCLOUD-TR-482", "username": "qa@duke", "password": "pw"},
+        )
+    run_id = r.json()["run_id"]
+    assert server_mod.RUN_CREDENTIALS[run_id] == ("qa@duke", "pw")
+
+
+def test_post_runs_ignores_a_half_filled_login(client):
+    with patch.object(server_mod, "_run_in_background", new=AsyncMock()):
+        r = client.post(
+            "/runs", json={"plan": "P", "username": "qa@duke", "password": ""}
+        )
+    assert r.json()["run_id"] not in server_mod.RUN_CREDENTIALS
+
+
+def test_get_run_never_exposes_credentials(client):
+    with patch.object(server_mod, "_run_in_background", new=AsyncMock()):
+        r = client.post(
+            "/runs", json={"plan": "P", "username": "qa@duke", "password": "s3cret"}
+        )
+    body = client.get(f"/runs/{r.json()['run_id']}").text
+    assert "s3cret" not in body
+    assert "qa@duke" not in body
+
+
+@pytest.mark.asyncio
+async def test_run_in_background_forwards_credentials_then_clears_them(monkeypatch):
+    captured = {}
+
+    class FakeOrch:
+        async def run_plan(self, plan_key, credentials=None, case_credentials=None):
+            captured["credentials"] = credentials
+            captured["case_credentials"] = case_credentials
+            return new_run_state(plan_key)
+
+    monkeypatch.setattr(server_mod, "_build_orchestrator", lambda on_update: FakeOrch())
+    monkeypatch.setattr(server_mod, "_manual_case_credentials", lambda plan: {})
+    state = new_run_state("P")
+    server_mod.RUN_CREDENTIALS[state.run_id] = ("qa@duke", "pw")
+
+    await server_mod._run_in_background(state.run_id, "P", state)
+
+    assert captured["credentials"] == ("qa@duke", "pw")
+    assert state.run_id not in server_mod.RUN_CREDENTIALS
+
+
+def test_manual_case_credentials_collects_only_complete_logins(monkeypatch):
+    class _Mark:
+        def __init__(self, user, pw):
+            self.login_username = user
+            self.login_password = pw
+
+    class _Case:
+        def __init__(self, case_id, mark):
+            self.id = case_id
+            self.mark = mark
+
+    class _Session:
+        cases = [
+            _Case("TC-2", _Mark("a@duke", "pw")),
+            _Case("TC-3", _Mark("b@duke", "")),      # no password — skipped
+            _Case("TC-4", _Mark("", "")),            # nothing saved — skipped
+        ]
+
+    monkeypatch.setattr(server_mod.MANUAL, "get", lambda plan: _Session())
+    assert server_mod._manual_case_credentials("P") == {"TC-2": ("a@duke", "pw")}
+
+
+def test_manual_case_credentials_empty_when_no_session(monkeypatch):
+    monkeypatch.setattr(server_mod.MANUAL, "get", lambda plan: None)
+    assert server_mod._manual_case_credentials("P") == {}
