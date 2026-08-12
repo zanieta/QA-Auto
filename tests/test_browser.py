@@ -7,6 +7,7 @@ distinguishes match vs. mismatch.
 
 from __future__ import annotations
 
+import base64
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -263,3 +264,36 @@ async def test_login_falls_back_to_env_without_session_credentials(monkeypatch):
 
     fill_args = [c.args for c in page.fill.await_args_list]
     assert ('input[placeholder="Email address"]', "env-user@x.com") in fill_args
+
+
+@pytest.mark.asyncio
+async def test_screenshot_stamps_the_current_url(monkeypatch):
+    seen = {}
+
+    def fake_stamp(png: bytes, url: str) -> bytes:
+        seen["png"] = png
+        seen["url"] = url
+        return b"STAMPED"
+
+    monkeypatch.setattr("agent.browser.stamp_url", fake_stamp)
+    s, page = _session_with_fake_page("https://app.example.com")
+    page.url = "https://app.example.com/account/recipes"
+    page.screenshot = AsyncMock(return_value=b"RAW")
+
+    result = await s.screenshot()
+
+    assert seen["png"] == b"RAW"
+    assert seen["url"] == "https://app.example.com/account/recipes"
+    assert base64.b64decode(result) == b"STAMPED"
+
+
+@pytest.mark.asyncio
+async def test_screenshot_returns_raw_bytes_when_stamping_fails(monkeypatch):
+    def boom(png: bytes, url: str) -> bytes:
+        raise RuntimeError("no pillow")
+
+    monkeypatch.setattr("agent.browser.stamp_url", boom)
+    s, page = _session_with_fake_page()
+    page.screenshot = AsyncMock(return_value=b"RAW")
+
+    assert base64.b64decode(await s.screenshot()) == b"RAW"

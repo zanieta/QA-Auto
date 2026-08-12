@@ -25,6 +25,8 @@ import os
 from typing import Any
 from urllib.parse import urljoin
 
+from agent.url_banner import stamp_url
+
 log = logging.getLogger(__name__)
 
 # Default per-action timeout. Playwright will retry locator queries within this window.
@@ -180,10 +182,20 @@ class BrowserSession:
     # -------------------------------------------------------------- primitives
 
     async def screenshot(self) -> str:
-        """Return a base64-encoded PNG of the current page (full viewport)."""
+        """Return a base64 PNG of the current page, with a URL strip on top.
+
+        The banner is drawn here — the single chokepoint every capture passes
+        through — so per-action evaluator frames and the final stored frame all
+        carry the URL. Stamping never raises: a cosmetic banner must not fail a
+        step, so a failure yields the unmodified screenshot.
+        """
         if self._page is None:
             raise BrowserError("Cannot screenshot — no active page")
         png: bytes = await self._page.screenshot(type="png", full_page=False)
+        try:
+            png = stamp_url(png, await self.current_url())
+        except Exception:
+            log.debug("URL banner failed; using raw screenshot", exc_info=True)
         return base64.b64encode(png).decode("ascii")
 
     async def wait_for_settle(self, quiet_ms: int = 800, timeout_ms: int = 15_000) -> None:
