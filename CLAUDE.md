@@ -143,6 +143,11 @@ SCREENSHOT_ON_PASS=false
 AUTO_CREATE_BUGS=false          # START false; enable only after a verified run
 RUN_MODE=continue               # continue | stop_on_fail
 LOG_LEVEL=INFO
+AGENT_LAUNCH_DELAY_S=3          # pause before a case's first action so a human
+                                # watching a visible window can follow along;
+                                # 0 disables; skipped entirely when HEADLESS=true
+STEP_MAX_ATTEMPTS=3             # retries per step (re-snapshot + re-translate)
+                                # before escalating a non-pass status
 ```
 
 ---
@@ -313,6 +318,16 @@ and the 2026-07-07 spec). Always close the session in a finally
 block. `snapshot_elements()` tags visible interactive elements with `data-agent-ref` and
 returns `{ref, tag, role, name}`; actions may carry a `ref` (resolved to
 `[data-agent-ref="…"]`) so the model targets real elements instead of guessing CSS.
+
+### agent/url_banner.py
+`stamp_url(png_bytes, url)` composites a 32px harness-drawn strip showing the
+page URL onto the top of a screenshot (Chrome has no real address bar to
+capture in a headless/automated viewport). Pure and browser-free — unit-tests
+without Playwright — and never raises: any failure (Pillow missing, undecodable
+image) returns the original bytes unchanged, so a cosmetic banner can never
+fail a step. Requires `Pillow` (see `requirements.txt`). The evaluator prompt
+(`prompts/result_evaluator.txt`) is told about the strip so it isn't mistaken
+for application content.
 
 ### agent/orchestrator.py
 The main loop. Per test case: fetch detail → translate each step → open browser →
