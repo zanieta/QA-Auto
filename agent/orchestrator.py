@@ -122,6 +122,12 @@ class Orchestrator:
         per_case = case_credentials or {}
         for case in cases:
             try:
+                # `or credentials`, not membership: the only producer
+                # (server._manual_case_credentials) ever inserts complete
+                # pairs, so a present-but-falsy value here means the tester
+                # deliberately left the field blank ("nothing typed"), and
+                # falls through to the run-level pair, then to the .env
+                # account — the same rule the docstring above describes.
                 await self._execute_case(
                     state, case, credentials=per_case.get(case["id"]) or credentials
                 )
