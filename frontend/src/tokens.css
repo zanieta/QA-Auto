@@ -1268,3 +1268,38 @@ button:focus-visible,
 @media (max-width: 640px) {
   .start-panel-wrap { padding: 24px 12px; }
 }
+
+/* --- Live run: login row, precondition, test data --------------------- */
+
+.run-credentials { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+
+.tape-precondition,
+.tape-test-data { padding: 12px 18px; border-bottom: 1px solid var(--line); }
+.tape-test-data { background: var(--navy-soft); }
+
+.tape-context-label {
+  display: block;
+  font-size: 0.6875rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--faint);
+  margin-bottom: 4px;
+}
+.tape-precondition p { margin: 0; color: var(--ink); }
+
+.tape-test-data dl {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 4px 16px;
+  margin: 0;
+}
+.tape-test-data dt { color: var(--muted); }
+.tape-test-data dd { margin: 0; color: var(--ink); }
+
+.step-test-data { font-size: 0.8125rem; color: var(--muted); margin-top: 4px; }
+.step-test-data-label {
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-size: 0.6875rem;
+  color: var(--faint);
+}

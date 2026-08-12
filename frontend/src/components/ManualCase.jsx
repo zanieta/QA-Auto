@@ -10,6 +10,7 @@
 import { useEffect, useRef, useState } from 'react'
 
 import Step from './Step.jsx'
+import CredentialsRow from './CredentialsRow.jsx'
 import { cancelRun, markCase, runAgentCase, saveCaseCredentials } from '../hooks/useManualState.js'
 import { useRunState } from '../hooks/useRunState.js'
 
@@ -202,22 +203,15 @@ export default function ManualCase({ plan, testCase, onChanged }) {
         </div>
       )}
 
-      <div className="manual-credentials">
-        <span className="manual-credentials-label">Login as</span>
-        <input
-          type="text"
-          placeholder="username (default admin)"
-          value={loginUser}
-          disabled={agentRunning}
-          onChange={(e) => setLoginUser(e.target.value)}
-        />
-        <input
-          type="password"
-          placeholder={m.has_password ? '••• saved' : 'password'}
-          value={loginPw}
-          disabled={agentRunning}
-          onChange={(e) => setLoginPw(e.target.value)}
-        />
+      <CredentialsRow
+        username={loginUser}
+        password={loginPw}
+        onUsernameChange={setLoginUser}
+        onPasswordChange={setLoginPw}
+        disabled={agentRunning}
+        savedPassword={m.has_password}
+        helpText="Leave blank to use the system admin account."
+      >
         <button
           type="button"
           className="btn btn-ghost"
@@ -227,8 +221,7 @@ export default function ManualCase({ plan, testCase, onChanged }) {
           Save
         </button>
         {credsMsg && <span className="manual-credentials-msg">{credsMsg}</span>}
-      </div>
-      <p className="manual-credentials-help">Leave blank to use the system admin account.</p>
+      </CredentialsRow>
 
       <p className="manual-agent-hint">
         The agent starts from the dashboard after login — do unchecked earlier steps by hand first.

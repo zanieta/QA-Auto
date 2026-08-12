@@ -12,6 +12,7 @@ import ExecutionTape from './components/ExecutionTape.jsx'
 import StageFoot from './components/StageFoot.jsx'
 import ManualView from './components/ManualView.jsx'
 import StartPanel from './components/StartPanel.jsx'
+import CredentialsRow from './components/CredentialsRow.jsx'
 import {
   logFailuresToJira,
   pushRunToQmetry,
@@ -27,6 +28,8 @@ export default function App() {
   const [activeId, setActiveId] = useState(null)
   const [starting, setStarting] = useState(false)
   const [tab, setTab] = useState('manual') // 'manual' | 'live'
+  const [runUser, setRunUser] = useState('')
+  const [runPw, setRunPw] = useState('')
 
   // What the rail browses: 'tr' = test runs, 'tc' = the project test case
   // library. A TR is opened as a plan of its own; a library case is opened as
@@ -173,7 +176,7 @@ export default function App() {
     setStarting(true)
     try {
       // Run the real QMetry cycle currently shown (?cycle=…), not the fixture plan.
-      const { run_id } = await startRun(planKey)
+      const { run_id } = await startRun(planKey, { username: runUser, password: runPw })
       setRunId(run_id)
     } catch (e) {
       // Backend not up yet during scaffold — keep showing the fixture and surface the error.
@@ -260,6 +263,14 @@ export default function App() {
               >
                 {runLabel}
               </button>
+              <CredentialsRow
+                username={runUser}
+                password={runPw}
+                onUsernameChange={setRunUser}
+                onPasswordChange={setRunPw}
+                disabled={isRunning}
+                helpText="Leave blank to use the system admin account. A case with its own login saved on the Manual tab uses that instead."
+              />
             </header>
             <StatStrip state={liveState} />
             <ExecutionTape activeCase={activeCase} />

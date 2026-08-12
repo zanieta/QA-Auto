@@ -4,7 +4,7 @@
 import { useState } from 'react'
 
 export default function Step({ step }) {
-  const { action, detail, status, evaluation, duration_seconds, screenshot_b64 } = step
+  const { action, detail, status, evaluation, duration_seconds, screenshot_b64, test_data } = step
   const [imgOpen, setImgOpen] = useState(false)
 
   return (
@@ -13,6 +13,14 @@ export default function Step({ step }) {
       <div className="step-body">
         <div className="step-action">{action}</div>
         {detail && <div className="step-detail">{detail}</div>}
+        <div className="step-test-data">
+          <span className="step-test-data-label">Test data</span>{' '}
+          {test_data ? (
+            <span className="mono">{test_data}</span>
+          ) : (
+            <em>none</em>
+          )}
+        </div>
         {evaluation && (
           <div className={`step-eval ${status}`}>{evaluation}</div>
         )}

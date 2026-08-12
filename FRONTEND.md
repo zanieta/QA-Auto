@@ -204,6 +204,14 @@ kept rows drifts off QMetry's offset and silently skips records.
 - **Run button**: primary navy. States: idle ("▶ Run plan"), running (inverts to
   white-on-navy-border, "⏸ Running…"), done ("▶ Run again"). Disabled while a run
   is in progress for other controls.
+- **Login row** (`<CredentialsRow>`, shared with the Manual tab's per-case row —
+  same "Login as" label, same `.manual-credentials` markup and classes): username
+  + password fields beside the Run button. Both disable while a run is in progress
+  (same rule as the Run button). Help copy: "Leave blank to use the system admin
+  account. A case with its own login saved on the Manual tab uses that instead." —
+  a case's own saved credentials (see "Case-level test data" below) always win
+  over whatever is typed here. The password is held in React state only, sent on
+  `POST /runs`, and never echoed back by `GET /runs/{id}`.
 
 ### 3. Stat strip (`.stat-strip`)
 Four inline stats: Total, Passed (green number), Failed (red number), Elapsed (mono,
@@ -315,7 +323,11 @@ appends to the tape as events arrive. Use this once Mode A works — it removes 
 poll lag so steps appear the instant the agent resolves them.
 
 ### Endpoints the frontend calls (Mode B / control plane)
-- `POST /runs` body `{ "plan": "SOUSCLOUD-TP-45" }` → starts a run, returns run id.
+- `POST /runs` body `{ "plan": "SOUSCLOUD-TP-45", "username", "password" }` →
+  starts a run, returns run id. `username`/`password` are optional and only sent
+  when both are non-empty (the Live tab's login row); a half-filled pair is
+  never sent, and the backend falls back to the `.env` admin account. A case
+  with its own login saved on the Manual tab wins over the run-level pair.
 - `GET /runs/{id}` → current run_state JSON (same shape as Mode A).
 - `GET /runs/{id}/stream` → SSE stream of step/status events.
 - `POST /runs/{id}/report` → triggers HTML report generation (the "View report" btn).

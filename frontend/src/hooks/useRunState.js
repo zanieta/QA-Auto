@@ -44,11 +44,18 @@ export function useRunState(runId) {
 }
 
 // Convenience: kicks off a real run. Returns { run_id }.
-export async function startRun(planKey) {
+// `credentials` is an optional { username, password }; both must be non-empty
+// to be sent at all, otherwise the backend uses the .env admin account.
+export async function startRun(planKey, credentials) {
+  const body = { plan: planKey }
+  if (credentials?.username && credentials?.password) {
+    body.username = credentials.username
+    body.password = credentials.password
+  }
   const res = await fetch('/runs', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ plan: planKey }),
+    body: JSON.stringify(body),
   })
   if (!res.ok) throw new Error(`Failed to start run: ${res.status}`)
   return res.json()

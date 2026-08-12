@@ -17,6 +17,25 @@ export default function ExecutionTape({ activeCase }) {
 
   return (
     <div className="tape-wrap" ref={wrapRef}>
+      {activeCase?.precondition && (
+        <div className="tape-precondition">
+          <span className="tape-context-label">Precondition</span>
+          <p>{activeCase.precondition}</p>
+        </div>
+      )}
+      {activeCase?.test_data?.length > 0 && (
+        <div className="tape-test-data">
+          <span className="tape-context-label">Test data</span>
+          <dl>
+            {activeCase.test_data.map((d) => (
+              <div key={d.name}>
+                <dt className="mono">{d.name}</dt>
+                <dd className="mono">{d.value}</dd>
+              </div>
+            ))}
+          </dl>
+        </div>
+      )}
       <div className="tape-section-label">Execution tape</div>
       {steps.length === 0 ? (
         <div className="tape-empty">
