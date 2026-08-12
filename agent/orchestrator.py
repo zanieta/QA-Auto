@@ -76,8 +76,21 @@ class Orchestrator:
 
     # ------------------------------------------------------------------ public
 
-    async def run_plan(self, plan_key: str) -> RunState:
-        """Run an entire plan end-to-end. Returns the final RunState."""
+    async def run_plan(
+        self,
+        plan_key: str,
+        credentials: tuple[str, str] | None = None,
+        case_credentials: dict[str, tuple[str, str]] | None = None,
+    ) -> RunState:
+        """Run an entire plan end-to-end. Returns the final RunState.
+
+        `credentials` is the run-level (username, password) override; a case id
+        present in `case_credentials` uses that pair instead. None means the
+        .env account. Credentials never enter run_state, a prompt, or a log
+        line — they reach BrowserSession.credentials and nowhere else. The
+        per-case map is built by the caller (server.py reads ManualStore) so
+        this module stays independent of the manual session store.
+        """
         plan = await self.case_source.get_plan(plan_key)
         state = new_run_state(plan["key"], plan["name"])
 
@@ -106,9 +119,12 @@ class Orchestrator:
         state.start_run()
         self.on_update(state)
 
+        per_case = case_credentials or {}
         for case in cases:
             try:
-                await self._execute_case(state, case)
+                await self._execute_case(
+                    state, case, credentials=per_case.get(case["id"]) or credentials
+                )
             except Exception:
                 log.exception("Case %s crashed; marking blocked", case.get("id"))
                 state.resolve_case(case["id"], "blocked")

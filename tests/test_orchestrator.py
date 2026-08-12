@@ -74,6 +74,32 @@ def _ok_actions():
     return [{"action": "click", "selector": "#go", "value": None}]
 
 
+def _bare_case(case_id: str) -> dict:
+    return {
+        "id": case_id,
+        "name": f"case {case_id}",
+        "steps": [{"action": "Click go", "expected": "Page loaded"}],
+    }
+
+
+def _credential_recorder(cases: list[dict]) -> tuple[Orchestrator, list]:
+    """Orchestrator whose _execute_case only records the credentials it got."""
+    seen: list[tuple[str, str] | None] = []
+    orch = Orchestrator(
+        azure=_fake_azure(),
+        browser_factory=_fake_browser,
+        case_source=FakeCaseSource({"key": "X", "name": "x"}, cases),
+        on_update=lambda s: None,
+    )
+
+    async def _fake(state, case, dry_run=False, step_indices=None, credentials=None):
+        seen.append(credentials)
+        state.resolve_case(case["id"], "pass")
+
+    orch._execute_case = _fake
+    return orch, seen
+
+
 # ---------- happy path ------------------------------------------------------
 
 
@@ -1097,3 +1123,28 @@ async def test_cases_without_the_new_fields_still_run():
     assert d["precondition"] is None
     assert d["test_data"] == []
     assert d["steps"][0]["test_data"] is None
+
+
+@pytest.mark.asyncio
+async def test_run_plan_passes_run_level_credentials_to_every_case():
+    orch, seen = _credential_recorder([_bare_case("TC-1"), _bare_case("TC-2")])
+    await orch.run_plan("X", credentials=("qa@duke", "pw"))
+    assert seen == [("qa@duke", "pw"), ("qa@duke", "pw")]
+
+
+@pytest.mark.asyncio
+async def test_per_case_credentials_override_the_run_level_pair():
+    orch, seen = _credential_recorder([_bare_case("TC-1"), _bare_case("TC-2")])
+    await orch.run_plan(
+        "X",
+        credentials=("run@duke", "pw"),
+        case_credentials={"TC-2": ("special@duke", "other")},
+    )
+    assert seen == [("run@duke", "pw"), ("special@duke", "other")]
+
+
+@pytest.mark.asyncio
+async def test_no_credentials_means_none_so_login_uses_dotenv():
+    orch, seen = _credential_recorder([_bare_case("TC-1")])
+    await orch.run_plan("X")
+    assert seen == [None]
