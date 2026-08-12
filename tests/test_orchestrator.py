@@ -977,3 +977,59 @@ async def test_step_attempts_one_restores_old_single_shot_behavior():
     assert step.status == "fail"
     assert azure.translate_step.await_count == 1
     assert azure.evaluate_result.await_count == 1
+
+
+def _delay_orchestrator(launch_delay_s: float, headless: bool):
+    """One-case orchestrator whose fake session reports a known headless flag."""
+    browser = _fake_browser()
+    browser.headless = headless
+    cases = [{"id": "A", "name": "Alpha", "steps": [
+        {"action": "Click go", "expected": "Page loaded"},
+    ]}]
+    orch = Orchestrator(
+        azure=_fake_azure(
+            translate_side_effect=[_ok_actions()],
+            evaluate_side_effect=[{"status": "pass", "reason": "Loaded"}],
+        ),
+        browser_factory=lambda: browser,
+        case_source=FakeCaseSource({"key": "X", "name": "x"}, cases),
+        on_update=lambda s: None,
+        launch_delay_s=launch_delay_s,
+    )
+    return orch
+
+
+@pytest.mark.asyncio
+async def test_launch_delay_pauses_a_visible_browser(monkeypatch):
+    slept: list[float] = []
+
+    async def fake_sleep(seconds):
+        slept.append(seconds)
+
+    monkeypatch.setattr("agent.orchestrator.asyncio.sleep", fake_sleep)
+    await _delay_orchestrator(launch_delay_s=3.0, headless=False).run_plan("X")
+    assert 3.0 in slept
+
+
+@pytest.mark.asyncio
+async def test_launch_delay_skipped_when_headless(monkeypatch):
+    slept: list[float] = []
+
+    async def fake_sleep(seconds):
+        slept.append(seconds)
+
+    monkeypatch.setattr("agent.orchestrator.asyncio.sleep", fake_sleep)
+    await _delay_orchestrator(launch_delay_s=3.0, headless=True).run_plan("X")
+    assert 3.0 not in slept
+
+
+@pytest.mark.asyncio
+async def test_launch_delay_of_zero_never_sleeps(monkeypatch):
+    slept: list[float] = []
+
+    async def fake_sleep(seconds):
+        slept.append(seconds)
+
+    monkeypatch.setattr("agent.orchestrator.asyncio.sleep", fake_sleep)
+    await _delay_orchestrator(launch_delay_s=0.0, headless=False).run_plan("X")
+    assert slept == []

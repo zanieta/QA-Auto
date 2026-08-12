@@ -18,6 +18,7 @@ tape updates live.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import time
@@ -46,6 +47,7 @@ class Orchestrator:
         jira=None,
         on_update: OnUpdate | None = None,
         step_attempts: int | None = None,
+        launch_delay_s: float | None = None,
     ):
         self.azure = azure or AzureAIClient()
         self.browser_factory = browser_factory or BrowserSession
@@ -63,6 +65,14 @@ class Orchestrator:
             else int(os.environ.get("STEP_MAX_ATTEMPTS", "3"))
         )
         self.step_attempt_budget_s = float(os.environ.get("STEP_ATTEMPT_BUDGET_S", "150"))
+        # Pause between a case's browser appearing and its first action, so a
+        # human watching a visible window can follow along. Pointless when
+        # headless, where it would only add wall clock (3s × 73 cases ≈ 3.5min),
+        # so _execute_case skips it there.
+        self.launch_delay_s = (
+            launch_delay_s if launch_delay_s is not None
+            else float(os.environ.get("AGENT_LAUNCH_DELAY_S", "3"))
+        )
 
     # ------------------------------------------------------------------ public
 
@@ -174,6 +184,12 @@ class Orchestrator:
             browser.credentials = credentials
             try:
                 await browser.open_session()
+                if self.launch_delay_s > 0 and not getattr(browser, "headless", True):
+                    log.info(
+                        "Launch delay: %.1fs before the first action of %s",
+                        self.launch_delay_s, case_id,
+                    )
+                    await asyncio.sleep(self.launch_delay_s)
                 await login(browser)
             except BrowserError as e:
                 log.error("Login failed for case %s: %s", case_id, e)
