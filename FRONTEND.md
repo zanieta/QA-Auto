@@ -312,9 +312,13 @@ Shape:
 ```
 
 The frontend treats this file as the single source of truth and re-renders on each
-poll. The agent updates it after every step. The live tape renders precondition →
-case test data → steps, matching the Manual panel; a step with no test data shows
-an italic *none*.
+poll. The agent updates it after every step. Precondition and case test data render
+in a non-scrolling `.tape-context` block ABOVE the execution tape — not inside
+`.tape-wrap` — so they stay visible while the tape below auto-scrolls to the newest
+step during a run; this is a deliberate divergence from the Manual panel (where
+they scroll with the rest of the case), forced by the live tape's auto-scroll
+behavior. Order is precondition → case test data → steps. A step with no test data
+shows an italic *none*.
 
 ### Mode B — Server-Sent Events (later, for smoother streaming)
 The agent runs a small FastAPI server exposing `GET /runs/{id}/stream` (SSE). Each

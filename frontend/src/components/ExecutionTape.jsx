@@ -15,37 +15,47 @@ export default function ExecutionTape({ activeCase }) {
     el.scrollTop = el.scrollHeight
   }, [steps.length, steps.map((s) => s.status).join('|')])
 
+  const hasContext = Boolean(activeCase?.precondition) || activeCase?.test_data?.length > 0
+
   return (
-    <div className="tape-wrap" ref={wrapRef}>
-      {activeCase?.precondition && (
-        <div className="tape-precondition">
-          <span className="tape-context-label">Precondition</span>
-          <p>{activeCase.precondition}</p>
+    <>
+      {hasContext && (
+        // Non-scrolling: sits above .tape-wrap so the precondition and test
+        // data stay visible while the tape below auto-scrolls during a run.
+        <div className="tape-context">
+          {activeCase?.precondition && (
+            <div className="tape-precondition">
+              <span className="tape-context-label">Precondition</span>
+              <p>{activeCase.precondition}</p>
+            </div>
+          )}
+          {activeCase?.test_data?.length > 0 && (
+            <div className="tape-test-data">
+              <span className="tape-context-label">Test data</span>
+              <dl>
+                {activeCase.test_data.map((d) => (
+                  <div key={d.name}>
+                    <dt className="mono">{d.name}</dt>
+                    <dd className="mono">{d.value}</dd>
+                  </div>
+                ))}
+              </dl>
+            </div>
+          )}
         </div>
       )}
-      {activeCase?.test_data?.length > 0 && (
-        <div className="tape-test-data">
-          <span className="tape-context-label">Test data</span>
-          <dl>
-            {activeCase.test_data.map((d) => (
-              <div key={d.name}>
-                <dt className="mono">{d.name}</dt>
-                <dd className="mono">{d.value}</dd>
-              </div>
-            ))}
-          </dl>
-        </div>
-      )}
-      <div className="tape-section-label">Execution tape</div>
-      {steps.length === 0 ? (
-        <div className="tape-empty">
-          {activeCase
-            ? 'No run yet. Press Run plan to start.'
-            : 'Select a test case to view its tape.'}
-        </div>
-      ) : (
-        steps.map((step, i) => <Step key={i} step={step} />)
-      )}
-    </div>
+      <div className="tape-wrap" ref={wrapRef}>
+        <div className="tape-section-label">Execution tape</div>
+        {steps.length === 0 ? (
+          <div className="tape-empty">
+            {activeCase
+              ? 'No run yet. Press Run plan to start.'
+              : 'Select a test case to view its tape.'}
+          </div>
+        ) : (
+          steps.map((step, i) => <Step key={i} step={step} />)
+        )}
+      </div>
+    </>
   )
 }
