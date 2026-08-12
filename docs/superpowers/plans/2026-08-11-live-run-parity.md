@@ -1093,6 +1093,8 @@ git commit -m "feat: POST /runs accepts a run-level login, Manual per-case wins"
 ### Task 8: Live console — login fields, precondition, test data
 
 **Files:**
+- Create: `frontend/src/components/CredentialsRow.jsx`
+- Modify: `frontend/src/components/ManualCase.jsx:205-231` (use the new component)
 - Modify: `frontend/src/hooks/useRunState.js:46-55` (`startRun`)
 - Modify: `frontend/src/App.jsx:171-187` (`handleRun`), `frontend/src/App.jsx:246-265` (stage head + tape)
 - Modify: `frontend/src/components/ExecutionTape.jsx`
@@ -1102,9 +1104,9 @@ git commit -m "feat: POST /runs accepts a run-level login, Manual per-case wins"
 
 **Interfaces:**
 - Consumes: `startRun(planKey, credentials)`; the run_state fields from Task 4 (`case.precondition`, `case.test_data`, `step.test_data`); `POST /runs` body from Task 7.
-- Produces: no exports beyond the changed `startRun` signature.
+- Produces: `<CredentialsRow username password onUsernameChange onPasswordChange disabled savedPassword idPrefix />` — the shared "Login as" row, used by both the Manual card and the Live stage head.
 
-**Reuse, don't reinvent:** the Manual panel already renders all of this. Copy the markup and class names from `frontend/src/components/ManualCase.jsx:205-231` (credentials row and helper copy) and its precondition/test-data blocks, so the two views look identical.
+**Ron's ruling (2026-08-12):** extract the login row into a shared component rather than duplicating the markup. The two surfaces must stay visually identical, and one component guarantees that. `ManualCase.jsx` keeps its own save-to-server behavior — only the markup moves.
 
 - [ ] **Step 1: Send credentials from the hook**
 
@@ -1130,7 +1132,58 @@ export async function startRun(planKey, credentials) {
 }
 ```
 
-- [ ] **Step 2: Add the login fields beside Run plan**
+- [ ] **Step 2a: Extract the shared login row**
+
+Create `frontend/src/components/CredentialsRow.jsx`. Lift the markup verbatim from `frontend/src/components/ManualCase.jsx:205-231` — same class names, same placeholders, same helper copy — so neither surface changes appearance:
+
+```jsx
+// The shared "Login as" row. Used by the Manual case card (per case) and the
+// Live stage head (per run). Purely presentational: the parent owns the values
+// and decides what saving means.
+
+export default function CredentialsRow({
+  username,
+  password,
+  onUsernameChange,
+  onPasswordChange,
+  disabled = false,
+  savedPassword = false,
+  helpText,
+  children,
+}) {
+  return (
+    <>
+      <div className="manual-credentials">
+        <span className="manual-credentials-label">Login as</span>
+        <input
+          type="text"
+          className="manual-credentials-input mono"
+          placeholder="username (default admin)"
+          value={username}
+          onChange={(e) => onUsernameChange(e.target.value)}
+          disabled={disabled}
+          aria-label="Login username"
+        />
+        <input
+          type="password"
+          className="manual-credentials-input mono"
+          placeholder={savedPassword ? '••• saved' : 'password'}
+          value={password}
+          onChange={(e) => onPasswordChange(e.target.value)}
+          disabled={disabled}
+          aria-label="Login password"
+        />
+        {children}
+      </div>
+      {helpText && <p className="manual-credentials-help">{helpText}</p>}
+    </>
+  )
+}
+```
+
+Then rewrite `ManualCase.jsx:205-231` to render `<CredentialsRow>`, passing its existing state (`loginUser`, `loginPw`, `m.has_password`), its Save button and `credsMsg` as `children`, and its current helper string as `helpText`. Keep the save behavior exactly as it is — only the markup moves. Verify the class names used in the component match what `tokens.css` already styles; do not rename any of them.
+
+- [ ] **Step 2b: Add the login fields beside Run plan**
 
 In `frontend/src/App.jsx`, add state near the other live-run state (`useState` is already imported at `frontend/src/App.jsx:7`):
 
@@ -1145,34 +1198,17 @@ Pass them in `handleRun` (`frontend/src/App.jsx:176`):
       const { run_id } = await startRun(planKey, { username: runUser, password: runPw })
 ```
 
-In the stage head beside the Run button (`frontend/src/App.jsx:256-262`), add the row. Class names match the Manual panel so it inherits the same styling:
+In the stage head beside the Run button (`frontend/src/App.jsx:256-262`), render the shared component. Import it alongside the other component imports:
 
 ```jsx
-            <div className="run-credentials">
-              <span className="manual-credentials-label">Login as</span>
-              <input
-                type="text"
-                className="manual-credentials-input mono"
-                placeholder="username (default admin)"
-                value={runUser}
-                onChange={(e) => setRunUser(e.target.value)}
-                disabled={isRunning}
-                aria-label="Run login username"
-              />
-              <input
-                type="password"
-                className="manual-credentials-input mono"
-                placeholder="password"
-                value={runPw}
-                onChange={(e) => setRunPw(e.target.value)}
-                disabled={isRunning}
-                aria-label="Run login password"
-              />
-            </div>
-            <p className="manual-credentials-help">
-              Leave blank to use the system admin account. A case with its own login
-              saved on the Manual tab uses that instead.
-            </p>
+            <CredentialsRow
+              username={runUser}
+              password={runPw}
+              onUsernameChange={setRunUser}
+              onPasswordChange={setRunPw}
+              disabled={isRunning}
+              helpText="Leave blank to use the system admin account. A case with its own login saved on the Manual tab uses that instead."
+            />
 ```
 
 - [ ] **Step 3: Show precondition and case test data in the tape**
