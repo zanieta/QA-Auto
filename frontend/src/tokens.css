@@ -480,11 +480,15 @@ button:focus-visible,
 .stage-head {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 14px;
   padding: 20px 28px 16px;
   border-bottom: 1px solid var(--line);
   background: var(--white);
 }
+
+.stage-head .manual-credentials { margin-left: auto; }
+.stage-head .manual-credentials-help { flex-basis: 100%; margin: 0; }
 
 .stage-head-id {
   font-family: var(--mono);
@@ -810,6 +814,8 @@ button:focus-visible,
   .stage-head,
   .stat-strip,
   .tape-wrap,
+  .tape-precondition,
+  .tape-test-data,
   .stage-foot {
     padding-left: 16px;
     padding-right: 16px;
@@ -1271,8 +1277,15 @@ button:focus-visible,
 
 /* --- Live run: login row, precondition, test data --------------------- */
 
+.tape-context { flex-shrink: 0; background: var(--white); }
+
 .tape-precondition,
-.tape-test-data { padding: 12px 18px; border-bottom: 1px solid var(--line); }
+.tape-test-data {
+  /* 28px matches .tape-wrap's own horizontal padding so these dividers run
+     edge-to-edge of the stage, same as .stage-head's border-bottom. */
+  padding: 12px 28px;
+  border-bottom: 1px solid var(--line);
+}
 .tape-test-data { background: var(--navy-soft); }
 
 .tape-context-label {
