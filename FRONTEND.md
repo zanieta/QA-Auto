@@ -283,6 +283,10 @@ Shape:
       "id": "IRHS-R-01",
       "name": "Create inventory recipe",
       "status": "pass",          // queued | running | pass | fail | blocked
+      "precondition": "…",        // QMetry precondition, or null
+      "test_data": [              // case-level QMetry parameter table; [] when none
+        { "name": "User Role", "value": "Admin" }
+      ],
       "steps": [
         {
           "action": "Navigate to Inventory module",
@@ -290,7 +294,8 @@ Shape:
           "status": "pass",       // running | pass | fail | blocked
           "evaluation": "Recipe list page loaded",
           "duration_seconds": 1.2,
-          "screenshot_b64": null  // base64 PNG of the page after the step, or null
+          "screenshot_b64": null, // base64 PNG of the page after the step, or null
+          "test_data": null       // QMetry per-step testData, or null
         }
       ]
     }
@@ -299,7 +304,9 @@ Shape:
 ```
 
 The frontend treats this file as the single source of truth and re-renders on each
-poll. The agent updates it after every step.
+poll. The agent updates it after every step. The live tape renders precondition →
+case test data → steps, matching the Manual panel; a step with no test data shows
+an italic *none*.
 
 ### Mode B — Server-Sent Events (later, for smoother streaming)
 The agent runs a small FastAPI server exposing `GET /runs/{id}/stream` (SSE). Each

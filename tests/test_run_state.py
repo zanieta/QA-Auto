@@ -67,7 +67,14 @@ def test_case_and_step_shape():
     case.steps.append(step)
     d = state.to_dict()
     case_d = d["test_cases"][0]
-    assert set(case_d.keys()) == {"id", "name", "status", "steps"}
+    assert set(case_d.keys()) == {
+        "id",
+        "name",
+        "status",
+        "precondition",
+        "test_data",
+        "steps",
+    }
     step_d = case_d["steps"][0]
     assert set(step_d.keys()) == {
         "action",
@@ -76,7 +83,39 @@ def test_case_and_step_shape():
         "evaluation",
         "duration_seconds",
         "screenshot_b64",
+        "test_data",
     }
+
+
+def test_case_carries_precondition_and_test_data():
+    state = new_run_state("X")
+    state.add_case(
+        TestCase(
+            id="SOUSCLOUD-TC-1985",
+            name="Edit inventory",
+            precondition="User is signed in as Admin",
+            test_data=[{"name": "User Role", "value": "Admin"}],
+        )
+    )
+    case_d = state.to_dict()["test_cases"][0]
+    assert case_d["precondition"] == "User is signed in as Admin"
+    assert case_d["test_data"] == [{"name": "User Role", "value": "Admin"}]
+
+
+def test_case_defaults_precondition_null_and_test_data_empty():
+    state = new_run_state("X")
+    state.add_case(TestCase(id="TC-1", name="No context"))
+    case_d = state.to_dict()["test_cases"][0]
+    assert case_d["precondition"] is None
+    assert case_d["test_data"] == []
+
+
+def test_step_carries_its_own_test_data():
+    state = new_run_state("X")
+    state.add_case(TestCase(id="TC-1", name="c"))
+    state.add_step("TC-1", Step(action="Type the name", detail="…", test_data="Recipe A"))
+    step_d = state.to_dict()["test_cases"][0]["steps"][0]
+    assert step_d["test_data"] == "Recipe A"
 
 
 # ---- transitions update summary ----------------------------------------

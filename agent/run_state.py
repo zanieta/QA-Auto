@@ -24,6 +24,7 @@ class Step:
     evaluation: str | None = None
     duration_seconds: float | None = None
     screenshot_b64: str | None = None
+    test_data: str | None = None
 
     def to_dict(self) -> dict:
         return {
@@ -33,6 +34,7 @@ class Step:
             "evaluation": self.evaluation,
             "duration_seconds": self.duration_seconds,
             "screenshot_b64": self.screenshot_b64,
+            "test_data": self.test_data,
         }
 
 
@@ -41,6 +43,8 @@ class TestCase:
     id: str
     name: str
     status: CaseStatus = "queued"
+    precondition: str | None = None
+    test_data: list[dict[str, str]] = field(default_factory=list)
     steps: list[Step] = field(default_factory=list)
 
     __test__ = False  # tell pytest this isn't a test class
@@ -50,6 +54,8 @@ class TestCase:
             "id": self.id,
             "name": self.name,
             "status": self.status,
+            "precondition": self.precondition,
+            "test_data": list(self.test_data),
             "steps": [s.to_dict() for s in self.steps],
         }
 
