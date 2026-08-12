@@ -1271,8 +1271,6 @@ button:focus-visible,
 
 /* --- Live run: login row, precondition, test data --------------------- */
 
-.run-credentials { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-
 .tape-precondition,
 .tape-test-data { padding: 12px 18px; border-bottom: 1px solid var(--line); }
 .tape-test-data { background: var(--navy-soft); }

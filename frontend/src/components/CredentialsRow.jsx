@@ -18,7 +18,6 @@ export default function CredentialsRow({
         <span className="manual-credentials-label">Login as</span>
         <input
           type="text"
-          className="manual-credentials-input mono"
           placeholder="username (default admin)"
           value={username}
           onChange={(e) => onUsernameChange(e.target.value)}
@@ -27,7 +26,6 @@ export default function CredentialsRow({
         />
         <input
           type="password"
-          className="manual-credentials-input mono"
           placeholder={savedPassword ? '••• saved' : 'password'}
           value={password}
           onChange={(e) => onPasswordChange(e.target.value)}
