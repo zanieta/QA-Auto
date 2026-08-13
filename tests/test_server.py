@@ -110,7 +110,7 @@ def test_report_409_when_not_done(client):
     assert r.status_code == 409
 
 
-def test_report_writes_html_and_returns_path(client, tmp_path, monkeypatch):
+def test_report_writes_html_and_returns_url(client, tmp_path, monkeypatch):
     monkeypatch.setattr("agent.reporter.REPORTS_DIR", tmp_path)
     state = new_run_state("X")
     state.start_run()
@@ -118,9 +118,14 @@ def test_report_writes_html_and_returns_path(client, tmp_path, monkeypatch):
     server_mod.RUNS[state.run_id] = state
     r = client.post(f"/runs/{state.run_id}/report")
     assert r.status_code == 200
-    path = Path(r.json()["path"])
-    assert path.exists()
-    assert path.suffix == ".html"
+    body = r.json()
+    # A browser-openable URL, not a filesystem path — file:// navigation from
+    # an http:// page is blocked by Chrome.
+    assert body["path"].startswith("/reports/")
+    assert body["path"].endswith(".html")
+    assert body["filename"] == Path(body["path"]).name
+    written = tmp_path / body["filename"]
+    assert written.exists()
 
 
 # ----- POST /runs/{id}/log-bugs ------------------------------------------

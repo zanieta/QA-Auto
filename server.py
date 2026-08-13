@@ -797,7 +797,10 @@ async def post_report(run_id: str) -> dict:
         path = generate_report(state)
     except NotImplementedError:
         raise HTTPException(501, "Reporter not implemented yet")
-    return {"path": str(path)}
+    # Return an HTTP URL the browser can open in a new tab, not a filesystem
+    # path — `file://` navigation from an `http://` page is blocked by Chrome.
+    # Served by the "/reports" static mount below.
+    return {"path": f"/reports/{path.name}", "filename": path.name}
 
 
 @app.post("/runs/{run_id}/log-bugs")
@@ -833,7 +836,14 @@ async def post_log_bugs(run_id: str) -> dict:
     return {"created": created, "errors": errors}
 
 
-# Static frontend (production). Mounted last so /runs/* routes win.
+# Generated HTML reports (agent/reporter.py). Mounted before the frontend
+# catch-all so "/reports/*" resolves here instead of being swallowed by it.
+# No auth: the server binds 127.0.0.1 only.
+_REPORTS_DIR = Path(__file__).resolve().parent / "reports"
+_REPORTS_DIR.mkdir(exist_ok=True)
+app.mount("/reports", StaticFiles(directory=_REPORTS_DIR), name="reports")
+
+# Static frontend (production). Mounted last so /runs/* and /reports/* routes win.
 _DIST = Path(__file__).resolve().parent / "frontend" / "dist"
 if _DIST.exists():
     app.mount("/", StaticFiles(directory=_DIST, html=True), name="frontend")

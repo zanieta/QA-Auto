@@ -334,7 +334,10 @@ poll lag so steps appear the instant the agent resolves them.
   with its own login saved on the Manual tab wins over the run-level pair.
 - `GET /runs/{id}` → current run_state JSON (same shape as Mode A).
 - `GET /runs/{id}/stream` → SSE stream of step/status events.
-- `POST /runs/{id}/report` → triggers HTML report generation (the "View report" btn).
+- `POST /runs/{id}/report` → triggers HTML report generation (the "View report"
+  btn), returns `{"path": "/reports/<filename>", "filename": ...}` — an
+  HTTP path served by the server's own `/reports` static mount, not a
+  filesystem path, so `window.open(path, '_blank')` actually opens it.
 - `POST /runs/{id}/log-bugs` → creates Jira bugs for failed cases (the gated button).
 - `POST /runs/{id}/push-qmetry` → `{pushed, skipped, errors}`; gated (409 unless
   QMetry configured and the run is done) — writes per-step results, explicit,
