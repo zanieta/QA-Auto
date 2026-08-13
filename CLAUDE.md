@@ -339,9 +339,13 @@ exceptions so one bad case never kills the run.
 ### agent/reporter.py
 After a run, generates `reports/run_<timestamp>_<run_id>.html`: self-contained HTML
 (inline CSS, Duke navy palette) with totals + per-case table showing status,
-detail, evaluation reason, and per-step duration. v1 does **not** include
-screenshot thumbnails — run_state doesn't carry screenshots yet. To add: store
-PNG bytes on `Step`, render as a data-URL `<img>` in the per-step row.
+detail, evaluation reason, and per-step duration. Each step's `screenshot_b64`
+(when present) is embedded as a data-URL `<img>` inside a collapsed `<details>`
+disclosure on that row — closed by default so a many-step case doesn't ship a
+multi-megabyte page open to a wall of images; steps with no screenshot render
+no markup at all. Served over HTTP at `/reports/<filename>` (server.py mounts
+`reports/` as static files) so the console's "View report" button can open it
+in a new tab — `file://` navigation from an `http://` page is blocked by Chrome.
 
 ### server.py
 FastAPI app. Endpoints (exactly what the frontend calls — see FRONTEND.md):

@@ -2,12 +2,16 @@
 
 After a run, writes `reports/run_<timestamp>.html`:
   - run totals (pass / fail / blocked / elapsed)
-  - per-case table with status, reason, per-step timings
+  - per-case table with status, reason, per-step timings, and (when captured)
+    a collapsed screenshot thumbnail per step
 
-Self-contained HTML — inline CSS using the Duke navy palette. No external assets,
-so the file works when opened directly from the filesystem.
-v1 skips screenshot thumbnails; the run_state model doesn't carry screenshots
-yet. Add later by storing PNG paths on each Step and rendering as <img>.
+Self-contained HTML — inline CSS using the Duke navy palette. No external
+network assets; screenshots are embedded as base64 data-URL `<img>` tags, so
+the file still works when opened directly from the filesystem. Each step's
+screenshot sits behind a `<details>` disclosure (closed by default) so a
+run with many steps doesn't ship a multi-megabyte page open to a wall of
+images — the console's own tape uses the same "collapsed until asked for"
+affordance.
 """
 
 from __future__ import annotations
@@ -72,6 +76,12 @@ td.duration { text-align: right; white-space: nowrap; }
 .eval.fail { color: var(--red); }
 .eval.blocked { color: var(--amber); }
 .empty { padding: 16px 18px; color: var(--muted); font-size: 13px; }
+.shot-toggle { margin-top: 6px; }
+.shot-toggle summary { cursor: pointer; font-family: 'DM Mono', monospace; font-size: 11px; color: var(--navy); list-style: none; }
+.shot-toggle summary::-webkit-details-marker { display: none; }
+.shot-toggle summary::before { content: "\\25B8 "; }
+.shot-toggle[open] summary::before { content: "\\25BE "; }
+.shot-toggle img { display: block; margin-top: 8px; max-width: 320px; max-height: 220px; border: 1px solid var(--line); border-radius: 6px; }
 .footer { color: var(--faint); font-size: 11px; margin-top: 24px; text-align: center; }
 """
 
@@ -156,6 +166,7 @@ def _render_step_row(step) -> str:
             f'<br><span class="mono" style="color:#6a7290">'
             f"Test data: {html.escape(step.test_data)}</span>"
         )
+    eval_html += _render_screenshot(step.screenshot_b64)
     return f"""
 <tr>
   <td>{action_html} <span class="badge {step.status}" style="margin-left:6px">{step.status}</span></td>
@@ -163,3 +174,19 @@ def _render_step_row(step) -> str:
   <td class="eval {step.status}">{eval_html}</td>
   <td class="duration">{duration}</td>
 </tr>"""
+
+
+def _render_screenshot(screenshot_b64: str | None) -> str:
+    """A collapsed `<details>` disclosure holding the step's screenshot.
+
+    Renders nothing when `screenshot_b64` is absent (still-running steps,
+    dry-run mode) — no empty frame, no broken image.
+    """
+    if not screenshot_b64:
+        return ""
+    return (
+        '<details class="shot-toggle">'
+        "<summary>Show screenshot</summary>"
+        f'<img src="data:image/png;base64,{screenshot_b64}" alt="Step screenshot">'
+        "</details>"
+    )
