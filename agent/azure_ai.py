@@ -50,6 +50,7 @@ class AzureAIClient:
         deployment: str | None = None,
         translator_deployment: str | None = None,
         evaluator_deployment: str | None = None,
+        evaluator_prompt_file: str | None = None,
         api_version: str | None = None,
         timeout: float = 60.0,
         max_attempts: int = 3,
@@ -75,6 +76,24 @@ class AzureAIClient:
             or os.environ.get("AZURE_AI_API_VERSION")
             or "2024-08-01-preview"
         )
+        # Which file under /prompts/ the evaluator's system prompt loads from.
+        # Defaults to the gpt-4o-tuned prompt so behaviour is unchanged when
+        # unset. Override to try a model-specific variant (e.g.
+        # result_evaluator_41.txt for gpt-4.1) without touching this file.
+        self.evaluator_prompt_file = (
+            evaluator_prompt_file
+            or os.environ.get("EVALUATOR_PROMPT_FILE")
+            or "result_evaluator.txt"
+        )
+        # Fail loudly here, not on the first evaluate_result call: a missing
+        # or unreadable override must crash at construction, never silently
+        # fall back to the default prompt (a silently-wrong prompt is worse
+        # than a crash for something that judges pass/fail verdicts).
+        if not (PROMPTS_DIR / self.evaluator_prompt_file).is_file():
+            raise AzureAIError(
+                f"EVALUATOR_PROMPT_FILE {self.evaluator_prompt_file!r} not found "
+                f"under {PROMPTS_DIR}"
+            )
         self.timeout = timeout
         self.max_attempts = max_attempts
         self._client = http_client
@@ -160,7 +179,7 @@ class AzureAIClient:
         `{"status": "pass" | "fail", "reason": "..."}`.
         """
         frames = [screenshot_b64] if isinstance(screenshot_b64, str) else list(screenshot_b64)
-        system = self._load_prompt("result_evaluator.txt")
+        system = self._load_prompt(self.evaluator_prompt_file)
         label = (
             f"EXPECTED: {expected}"
             if len(frames) == 1

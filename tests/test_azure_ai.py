@@ -38,6 +38,7 @@ def _isolate_azure_env(monkeypatch):
         "AZURE_AI_TRANSLATOR_DEPLOYMENT",
         "AZURE_AI_EVALUATOR_DEPLOYMENT",
         "AZURE_AI_API_VERSION",
+        "EVALUATOR_PROMPT_FILE",
     ):
         monkeypatch.delenv(var, raising=False)
 
@@ -77,6 +78,64 @@ def test_role_deployments_env_fallback(monkeypatch):
     c = AzureAIClient(endpoint=ENDPOINT, api_key=KEY, deployment=DEPLOY)
     assert c.translator_deployment == "gpt-4.1-mini"
     assert c.evaluator_deployment == DEPLOY
+
+
+# ---------------------------------------------------------------- evaluator prompt file
+
+
+def test_evaluator_prompt_file_defaults_to_result_evaluator_txt():
+    """Unset EVALUATOR_PROMPT_FILE -> byte-identical behaviour to before this feature."""
+    c = AzureAIClient(endpoint=ENDPOINT, api_key=KEY, deployment=DEPLOY)
+    assert c.evaluator_prompt_file == "result_evaluator.txt"
+
+
+@pytest.mark.asyncio
+async def test_evaluator_prompt_file_default_loads_result_evaluator_txt(monkeypatch):
+    """The default path really reads prompts/result_evaluator.txt, not a copy."""
+    fake = MagicMock(spec=httpx.AsyncClient)
+    fake.post = AsyncMock(return_value=_ok('{"status":"pass","reason":"ok"}'))
+    c = AzureAIClient(endpoint=ENDPOINT, api_key=KEY, deployment=DEPLOY, http_client=fake)
+    await c.evaluate_result("frame", "Expected X")
+    body = fake.post.call_args.kwargs["json"]
+    system_prompt = body["messages"][0]["content"]
+    assert system_prompt == (PROMPTS_DIR / "result_evaluator.txt").read_text(encoding="utf-8")
+
+
+def test_evaluator_prompt_file_env_override(monkeypatch):
+    monkeypatch.setenv("EVALUATOR_PROMPT_FILE", "result_evaluator_41.txt")
+    c = AzureAIClient(endpoint=ENDPOINT, api_key=KEY, deployment=DEPLOY)
+    assert c.evaluator_prompt_file == "result_evaluator_41.txt"
+
+
+def test_evaluator_prompt_file_constructor_arg_wins_over_env(monkeypatch):
+    monkeypatch.setenv("EVALUATOR_PROMPT_FILE", "result_evaluator_41.txt")
+    c = AzureAIClient(
+        endpoint=ENDPOINT,
+        api_key=KEY,
+        deployment=DEPLOY,
+        evaluator_prompt_file="result_evaluator.txt",
+    )
+    assert c.evaluator_prompt_file == "result_evaluator.txt"
+
+
+@pytest.mark.asyncio
+async def test_evaluator_prompt_file_override_is_actually_used(monkeypatch):
+    monkeypatch.setenv("EVALUATOR_PROMPT_FILE", "result_evaluator_41.txt")
+    fake = MagicMock(spec=httpx.AsyncClient)
+    fake.post = AsyncMock(return_value=_ok('{"status":"pass","reason":"ok"}'))
+    c = AzureAIClient(endpoint=ENDPOINT, api_key=KEY, deployment=DEPLOY, http_client=fake)
+    await c.evaluate_result("frame", "Expected X")
+    body = fake.post.call_args.kwargs["json"]
+    system_prompt = body["messages"][0]["content"]
+    assert system_prompt == (PROMPTS_DIR / "result_evaluator_41.txt").read_text(encoding="utf-8")
+    assert system_prompt != (PROMPTS_DIR / "result_evaluator.txt").read_text(encoding="utf-8")
+
+
+def test_evaluator_prompt_file_missing_override_fails_loudly_at_construction(monkeypatch):
+    """A missing/unreadable override must raise, never silently fall back."""
+    monkeypatch.setenv("EVALUATOR_PROMPT_FILE", "does_not_exist.txt")
+    with pytest.raises(AzureAIError):
+        AzureAIClient(endpoint=ENDPOINT, api_key=KEY, deployment=DEPLOY)
 
 
 @pytest.mark.asyncio
