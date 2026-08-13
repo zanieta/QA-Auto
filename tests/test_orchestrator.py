@@ -1202,3 +1202,140 @@ async def test_no_credentials_means_none_so_login_uses_dotenv():
     orch, seen = _credential_recorder([_bare_case("TC-1")])
     await orch.run_plan("X")
     assert seen == [None]
+
+
+# ----- PAGE DATA block (2026-08-13, TC-2915 empty test_data) -----------------
+
+
+def test_step_needs_existing_data_matches_positive_phrases():
+    from agent.orchestrator import _step_needs_existing_data
+
+    # TC-2915's real step text.
+    assert _step_needs_existing_data(
+        "Update the Email Address field with an email address that is "
+        "already assigned to another User.",
+        "",
+    )
+    assert _step_needs_existing_data("Try a name that already exists", "")
+    assert _step_needs_existing_data("", "The serial number is already in use")
+    assert _step_needs_existing_data("Enter a duplicate value", "")
+    assert _step_needs_existing_data("", "already taken by another account")
+    assert _step_needs_existing_data("", "email is already registered")
+    assert _step_needs_existing_data("Use an existing site name", "")
+    assert _step_needs_existing_data("", "that already belongs to someone else")
+
+
+def test_step_needs_existing_data_does_not_match_ordinary_steps():
+    from agent.orchestrator import _step_needs_existing_data
+
+    assert not _step_needs_existing_data("Click the Save button", "Record saved")
+    assert not _step_needs_existing_data(
+        "Enter the cook time", "Value accepted"
+    )
+    assert not _step_needs_existing_data("Verify the sidebar menus", "Menus visible")
+
+
+@pytest.mark.asyncio
+async def test_non_triggering_step_context_is_byte_identical_and_skips_snapshot():
+    """Regression guard: for a step whose text doesn't match the existing-data
+    phrases, the translator context must be EXACTLY what it was before this
+    feature existed, and snapshot_table_data must never be called."""
+    cases = [{"id": "A", "name": "Alpha", "steps": [
+        {"action": "Click Save", "expected": ""},
+    ]}]
+    azure = _fake_azure(
+        translate_side_effect=[_ok_actions()],
+        evaluate_side_effect=[{"status": "pass", "reason": "ok"}],
+    )
+    browser = _fake_browser()
+    browser.snapshot_table_data = AsyncMock()
+    orch = Orchestrator(
+        azure=azure,
+        browser_factory=lambda: browser,
+        case_source=FakeCaseSource({"key": "X", "name": "x"}, cases),
+        on_update=lambda s: None,
+        step_attempts=1,
+    )
+    await orch.run_single_case("A")
+
+    ctx = azure.translate_step.call_args_list[0].kwargs["app_context"]
+    assert "PAGE DATA" not in ctx
+    # Exactly the pre-feature shape: case brief + current URL, nothing else.
+    expected_ctx = (
+        "TEST CASE: A — Alpha\n"
+        "Steps:\n"
+        "  1. Click Save  [>> CURRENT — execute ONLY this step now]\n"
+        "current URL: https://app/"
+    )
+    assert ctx == expected_ctx
+    browser.snapshot_table_data.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_triggering_step_context_includes_page_data_block():
+    """A step whose text matches the existing-data phrases gets a PAGE DATA
+    block appended, built from the mocked table snapshot's real values."""
+    cases = [{"id": "A", "name": "Alpha", "steps": [
+        {
+            "action": (
+                "Update the Email Address field with an email address that "
+                "is already assigned to another User."
+            ),
+            "expected": "An error is shown and the edit is rejected",
+        },
+    ]}]
+    azure = _fake_azure(
+        translate_side_effect=[_ok_actions()],
+        evaluate_side_effect=[{"status": "pass", "reason": "ok"}],
+    )
+    browser = _fake_browser()
+    browser.snapshot_table_data = AsyncMock(
+        return_value={
+            "headers": ["Name", "Email"],
+            "rows": [
+                ["Alice Admin", "alice@duke.com"],
+                ["Bob User", "bob@duke.com"],
+            ],
+        }
+    )
+    orch = Orchestrator(
+        azure=azure,
+        browser_factory=lambda: browser,
+        case_source=FakeCaseSource({"key": "X", "name": "x"}, cases),
+        on_update=lambda s: None,
+        step_attempts=1,
+    )
+    await orch.run_single_case("A")
+
+    ctx = azure.translate_step.call_args_list[0].kwargs["app_context"]
+    assert "PAGE DATA" in ctx
+    assert "alice@duke.com" in ctx
+    assert "bob@duke.com" in ctx
+    browser.snapshot_table_data.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_triggering_step_with_no_table_adds_no_page_data_block():
+    """If snapshot_table_data finds nothing, no PAGE DATA block is added —
+    the model is left to say so rather than being handed an empty block."""
+    cases = [{"id": "A", "name": "Alpha", "steps": [
+        {"action": "Use a name that already exists", "expected": "Rejected"},
+    ]}]
+    azure = _fake_azure(
+        translate_side_effect=[_ok_actions()],
+        evaluate_side_effect=[{"status": "pass", "reason": "ok"}],
+    )
+    browser = _fake_browser()
+    browser.snapshot_table_data = AsyncMock(return_value={"headers": [], "rows": []})
+    orch = Orchestrator(
+        azure=azure,
+        browser_factory=lambda: browser,
+        case_source=FakeCaseSource({"key": "X", "name": "x"}, cases),
+        on_update=lambda s: None,
+        step_attempts=1,
+    )
+    await orch.run_single_case("A")
+
+    ctx = azure.translate_step.call_args_list[0].kwargs["app_context"]
+    assert "PAGE DATA" not in ctx
+    browser.snapshot_table_data.assert_awaited_once()

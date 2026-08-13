@@ -94,3 +94,13 @@ Rules:
   in edit forms appear in PAGE ELEMENTS with their current state, e.g.
   "Asset Management (checked)" — ONE click on that ref toggles it. Finish
   with the Save button.
+- If a PAGE DATA block is present, the step needs a value that must ALREADY
+  EXIST in the application (a duplicate email, an existing name, an in-use
+  serial number) — take that value VERBATIM from PAGE DATA. Never invent a
+  placeholder such as "example.com", "test@test.com", or "foo": a value that
+  exists nowhere in the app makes the test vacuous. Pick a row DIFFERENT from
+  the record currently being edited — reusing the edited record's own value
+  is not a duplicate and will not trigger the validation being tested. If
+  PAGE DATA is absent or has nothing suitable, say so by emitting no actions
+  for that value rather than fabricating one — let the step be judged on
+  what is there.

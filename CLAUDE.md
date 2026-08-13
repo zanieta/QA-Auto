@@ -367,6 +367,14 @@ and the 2026-07-07 spec). Always close the session in a finally
 block. `snapshot_elements()` tags visible interactive elements with `data-agent-ref` and
 returns `{ref, tag, role, name}`; actions may carry a `ref` (resolved to
 `[data-agent-ref="…"]`) so the model targets real elements instead of guessing CSS.
+`snapshot_table_data()` (2026-08-13) returns the first visible on-page `<table>`
+as `{headers, rows}` — real cell text, not just interactive elements — for
+steps that need to see values already on screen (e.g. a Users table's email
+column). Hard-capped in Python (`MAX_TABLE_ROWS`=15, `MAX_TABLE_COLS`=6,
+`MAX_TABLE_CELL_CHARS`=40, truncating with an ellipsis) regardless of what the
+page/JS returns, so it can never bloat a prompt or a log line; empty cells are
+dropped; no table on the page returns `{"headers": [], "rows": []}` and never
+raises.
 
 ### agent/url_banner.py
 `stamp_url(png_bytes, url)` composites a 32px harness-drawn strip showing the
@@ -384,6 +392,26 @@ execute + screenshot each step → evaluate → resolve step in run_state → po
 QMetry → (if fail and bugs enabled) create Jira bug → close browser. Updates
 run_state after every step so the frontend stays live. Catches all per-case
 exceptions so one bad case never kills the run.
+
+**PAGE DATA block (2026-08-13).** TC-2915 ("Verify Cannot Edit Email Address to
+One That Already Exists") has empty QMetry `test_data`, so the model invented
+`existing.user@example.com` — an address that exists nowhere — and the app
+accepted the "duplicate" edit: the negative test verified nothing. `_execute_step`
+/ `_attempt_step` now detect, via `_step_needs_existing_data` matching the
+step's action + expected text (case-insensitive) against `_EXISTING_DATA_PHRASES`
+(`already exists`, `already assigned`, `already in use`, `already taken`,
+`already registered`, `duplicate`, `another user`, `existing user`, `an
+existing`, `that already`), whether a step needs a value that must already
+exist in the app. When it matches AND the run is live (not dry-run),
+`_build_page_data_block` calls `BrowserSession.snapshot_table_data()` once per
+attempt and appends a `PAGE DATA` block (labelled as real on-screen values) to
+the translator context; `prompts/step_translator.txt` tells the model to take
+such a value verbatim from PAGE DATA (never a placeholder), pick a row
+different from the record being edited, and say so via no actions rather than
+fabricate if nothing suitable is present. For every non-matching step the
+context is unchanged and `snapshot_table_data` is never called. PAGE DATA can
+carry real user emails — that's fine in a model prompt, but it must never
+reach a log line, `run_state`, or an SSE event; only its row count is logged.
 
 ### agent/reporter.py
 After a run, generates `reports/run_<timestamp>_<run_id>.html`: self-contained HTML

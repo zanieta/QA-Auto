@@ -37,6 +37,39 @@ log = logging.getLogger(__name__)
 OnUpdate = Callable[[RunState], None]
 BrowserFactory = Callable[[], BrowserSession]
 
+# Phrases that flag a step as needing a value that must ALREADY EXIST in the
+# app (a duplicate email, an in-use name, an already-registered serial) for a
+# negative-path assertion to mean anything. TC-2915 ("Verify Cannot Edit
+# Email Address to One That Already Exists") has empty QMetry test_data, so
+# without this the model invented an email nothing else in the system had —
+# the app accepted the "duplicate" and the negative test verified nothing.
+# When a step's action/expected text matches one of these (case-insensitive),
+# and the run is live, the translator context gets a PAGE DATA block of real
+# on-page table values (see BrowserSession.snapshot_table_data). Extend this
+# tuple as new phrasings turn up in QMetry steps.
+_EXISTING_DATA_PHRASES = (
+    "already exists",
+    "already assigned",
+    "already in use",
+    "already taken",
+    "already registered",
+    "duplicate",
+    "another user",
+    "existing user",
+    "an existing",
+    "that already",
+)
+
+
+def _step_needs_existing_data(action_text: str, expected: str) -> bool:
+    """True if this step's text implies it needs a real, pre-existing value.
+
+    Matches `_EXISTING_DATA_PHRASES` case-insensitively against the step's
+    action and expected-result text combined.
+    """
+    haystack = f"{action_text} {expected}".lower()
+    return any(phrase in haystack for phrase in _EXISTING_DATA_PHRASES)
+
 
 class Orchestrator:
     def __init__(
@@ -459,6 +492,14 @@ class Orchestrator:
         attempt_start = time.monotonic()
         prev_round_had_actions = True  # no "previous round" yet — round 0 always runs
 
+        # PAGE DATA (2026-08-13): only for steps whose text implies they need
+        # a value that must already exist in the app. Fetched at most once per
+        # attempt (cached below) and appended to `context` further down — for
+        # every other step this whole block is inert and `context` is built
+        # exactly as before.
+        needs_page_data = _step_needs_existing_data(action_text, expected)
+        page_data_block: str | None = None
+
         for _round in range(max_rounds):
             if _round > 0 and not prev_round_had_actions:
                 if (time.monotonic() - attempt_start) > self.step_attempt_budget_s:
@@ -497,6 +538,11 @@ class Orchestrator:
                 )
             if escalation:
                 context = f"{escalation}\n{context}"
+            if needs_page_data:
+                if page_data_block is None:
+                    page_data_block = await self._build_page_data_block(browser)
+                if page_data_block:
+                    context += f"\n{page_data_block}"
 
             try:
                 actions = await self.azure.translate_step(
@@ -588,6 +634,37 @@ class Orchestrator:
         if status not in ("pass", "fail", "blocked"):
             status = "fail"
         return status, evaluation["reason"], png_b64
+
+    async def _build_page_data_block(self, browser: BrowserSession) -> str:
+        """Build a PAGE DATA block from the current page's on-screen table.
+
+        Returns "" if there is no suitable table (never raises — a snapshot
+        problem must not affect the step). The block may contain real values
+        such as user emails, which is fine for a model prompt, but it must
+        NEVER be written to a log line, run_state, or an SSE event — only the
+        row count is logged.
+        """
+        try:
+            table = await browser.snapshot_table_data()
+        except Exception:
+            log.warning("snapshot_table_data failed", exc_info=True)
+            return ""
+        rows = table.get("rows") or []
+        if not rows:
+            return ""
+        log.info("Attaching PAGE DATA block to translator context: %d row(s)", len(rows))
+        lines = [
+            "PAGE DATA — real values currently visible on this page in the "
+            "application (not invented). Use these for any value that must "
+            "already exist (e.g. a duplicate email); never fabricate a "
+            "placeholder like example.com or test@test.com."
+        ]
+        headers = table.get("headers") or []
+        if headers:
+            lines.append(" | ".join(headers))
+        for row in rows:
+            lines.append(" | ".join(row))
+        return "\n".join(lines)
 
     async def _create_bug(self, state: RunState, case_id: str) -> None:
         """Stub — wire up once jira_client is implemented."""
