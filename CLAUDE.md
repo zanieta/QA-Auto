@@ -115,6 +115,9 @@ AZURE_AI_DEPLOYMENT=gpt-4o
 AZURE_AI_TRANSLATOR_DEPLOYMENT=   # optional; cheap text model for step translation
 AZURE_AI_EVALUATOR_DEPLOYMENT=    # optional; vision model for screenshot evaluation
                                   # both fall back to AZURE_AI_DEPLOYMENT
+EVALUATOR_PROMPT_FILE=            # optional; which prompts/*.txt the evaluator
+                                  # loads. Defaults to result_evaluator.txt
+                                  # (gpt-4o-tuned) when unset.
 
 # QMetry
 QMETRY_BASE_URL=https://dukemanufacturing.atlassian.net
@@ -312,6 +315,21 @@ goes as a base64 `image_url` content block. `translate_step` takes the page elem
 target by `ref`. The orchestrator snapshots before translating and re-snapshots +
 re-translates + retries a step once on a browser action failure (DOM-grounded
 actions — see the 2026-06-30 spec).
+
+**Evaluator model migration (gpt-4o → gpt-4.1, in progress, unvalidated):**
+`gpt-4o` is deprecated in Azure; the migration target for
+`AZURE_AI_EVALUATOR_DEPLOYMENT` is the `gpt-4.1` family. The evaluator prompt
+loads from whichever file `EVALUATOR_PROMPT_FILE` names (default
+`result_evaluator.txt`, unchanged behaviour when the var is unset).
+`prompts/result_evaluator_41.txt` is a gpt-4.1-tuned candidate — same rules,
+with the rule-precedence made explicit and the "when in doubt, choose fail"
+line bounded to not override the `blocked` rules — but it is **unvalidated**:
+no live judgments have been run against it. Before flipping either env var,
+validate the candidate with `scripts/prompt_eval/` (extended to compare
+deployment × prompt-file combinations — verdict distribution, flip rate,
+disagreement vs. a baseline, and reasons) against captured real inputs. Only
+flip `AZURE_AI_EVALUATOR_DEPLOYMENT` / `EVALUATOR_PROMPT_FILE` once that
+comparison looks acceptable.
 
 ### agent/browser.py
 Playwright async wrapper. Methods: `open_session`, `execute_action`, `screenshot`
