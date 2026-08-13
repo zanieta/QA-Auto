@@ -61,6 +61,13 @@ export default function App() {
   }, [])
 
   function selectPlan(planKeyToOpen) {
+    if (planKeyToOpen !== chosenPlan) {
+      // A different plan/case is now selected: the Live tab's run and active
+      // case belonged to the previous plan, so drop them. Otherwise the stage
+      // keeps showing the finished run for the case the tester just left.
+      setRunId(null)
+      setActiveId(null)
+    }
     setChosenPlan(planKeyToOpen)
     setManualActiveId(null)
     // Keep the URL shareable without a reload.

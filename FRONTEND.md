@@ -172,6 +172,13 @@ backend therefore handles three query shapes; the frontend just sends `?q=`:
   always visible.
 - Picking a **TR** drills the rail in. Picking a **TC** opens that one case in
   the stage and **leaves the browser up**, so the tester can walk the list.
+- **Picking a different plan/case from the browser resets the Live tab's run.**
+  Choosing a new TR or TC clears any in-memory run id and active case, so the
+  Live stage falls back to the preview for the newly chosen plan (queued cases,
+  empty tape) instead of continuing to show a finished run's stale header and
+  tape. This only fires on an actual plan change — clicking a case **within**
+  an already-drilled-in run (below) still just switches the tape via
+  `activeId`, no reset, no interruption to a run in progress.
 
 #### Drilled-in state (a test run is open)
 - **Back link** (`.rail-back`): "← All test runs", returns to browse and clears
