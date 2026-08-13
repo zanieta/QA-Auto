@@ -48,6 +48,7 @@ class Orchestrator:
         on_update: OnUpdate | None = None,
         step_attempts: int | None = None,
         launch_delay_s: float | None = None,
+        eval_max_frames: int | None = None,
     ):
         self.azure = azure or AzureAIClient()
         self.browser_factory = browser_factory or BrowserSession
@@ -73,6 +74,16 @@ class Orchestrator:
             launch_delay_s if launch_delay_s is not None
             else float(os.environ.get("AGENT_LAUNCH_DELAY_S", "3"))
         )
+        # How many of a step's captured frames reach the evaluator. Base64 PNGs
+        # dominate evaluation token cost, so this is the largest cost lever in a
+        # run — larger than the model tier. The final frame is always included:
+        # the window keeps the LAST n frames, so a value of 1 still evaluates
+        # the settled end state. Values below 1 are clamped to 1.
+        raw_frames = (
+            eval_max_frames if eval_max_frames is not None
+            else int(os.environ.get("EVAL_MAX_FRAMES", "8"))
+        )
+        self.eval_max_frames = max(1, raw_frames)
 
     # ------------------------------------------------------------------ public
 
@@ -562,8 +573,10 @@ class Orchestrator:
                 log.warning("lookup_guidance failed for %s/%s", case_id, orig_index, exc_info=True)
                 guidance = ""
             # Cap what we send the evaluator; always keep the final frame.
+            # Images dominate evaluation cost, so this window is the biggest
+            # cost lever in a run — see EVAL_MAX_FRAMES.
             evaluation = await self.azure.evaluate_result(
-                frames[-8:], expected,
+                frames[-self.eval_max_frames:], expected,
                 performed=_format_detail(executed_actions),
                 step_text=action_text,
                 guidance=guidance,

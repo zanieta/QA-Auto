@@ -148,6 +148,12 @@ AGENT_LAUNCH_DELAY_S=3          # pause before a case's first action so a human
                                 # 0 disables; skipped entirely when HEADLESS=true
 STEP_MAX_ATTEMPTS=3             # retries per step (re-snapshot + re-translate)
                                 # before escalating a non-pass status
+EVAL_MAX_FRAMES=8               # frames sent to the vision evaluator per step.
+                                # Base64 PNGs dominate evaluation token cost, so
+                                # this is the LARGEST cost lever in a run —
+                                # bigger than the model tier. Keeps the LAST n
+                                # frames, so the settled end state always ships.
+                                # Below 1 is clamped to 1.
 ```
 
 ---

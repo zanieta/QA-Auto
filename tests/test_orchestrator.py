@@ -487,6 +487,60 @@ async def test_multi_action_step_evaluates_all_frames():
     assert state.test_cases[0].steps[0].screenshot_b64 == "PNG-B64"
 
 
+def _six_clicks() -> list[dict]:
+    return [
+        {"action": "click", "selector": f"#s{i}", "value": None} for i in range(6)
+    ]
+
+
+def _frame_window_orchestrator(eval_max_frames, cases):
+    azure = _fake_azure(
+        translate_side_effect=[_six_clicks()],
+        evaluate_side_effect=[{"status": "pass", "reason": "ok"}],
+    )
+    orch = Orchestrator(
+        azure=azure,
+        browser_factory=_fake_browser,
+        case_source=FakeCaseSource({"key": "X", "name": "x"}, cases),
+        on_update=lambda s: None,
+        eval_max_frames=eval_max_frames,
+    )
+    return orch, azure
+
+
+@pytest.mark.asyncio
+async def test_eval_max_frames_trims_the_window_sent_to_the_evaluator():
+    """Images dominate evaluator cost, so the window must actually be capped."""
+    cases = [{"id": "A", "name": "Alpha", "steps": [
+        {"action": "Expand all menus", "expected": "All sub-items visible"},
+    ]}]
+    orch, azure = _frame_window_orchestrator(2, cases)
+    await orch.run_single_case("A")
+    frames, _expected = azure.evaluate_result.call_args.args
+    assert len(frames) == 2
+
+
+@pytest.mark.asyncio
+async def test_eval_max_frames_defaults_to_eight_from_env(monkeypatch):
+    monkeypatch.delenv("EVAL_MAX_FRAMES", raising=False)
+    assert Orchestrator(azure=_fake_azure()).eval_max_frames == 8
+    monkeypatch.setenv("EVAL_MAX_FRAMES", "3")
+    assert Orchestrator(azure=_fake_azure()).eval_max_frames == 3
+
+
+@pytest.mark.asyncio
+async def test_eval_max_frames_below_one_is_clamped_so_a_frame_is_always_sent():
+    """A 0 or negative value must not blank the evaluator's input entirely."""
+    cases = [{"id": "A", "name": "Alpha", "steps": [
+        {"action": "Expand all menus", "expected": "All sub-items visible"},
+    ]}]
+    orch, azure = _frame_window_orchestrator(0, cases)
+    assert orch.eval_max_frames == 1
+    await orch.run_single_case("A")
+    frames, _expected = azure.evaluate_result.call_args.args
+    assert len(frames) == 1
+
+
 @pytest.mark.asyncio
 async def test_translator_still_receives_the_step_test_data():
     """`test_data` is a separate field now (the console labels it per step), so
