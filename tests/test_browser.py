@@ -297,3 +297,81 @@ async def test_screenshot_returns_raw_bytes_when_stamping_fails(monkeypatch):
     page.screenshot = AsyncMock(return_value=b"RAW")
 
     assert base64.b64decode(await s.screenshot()) == b"RAW"
+
+
+# --- table-data snapshot (PAGE DATA feature, 2026-08-13) ---------------------
+
+
+@pytest.mark.asyncio
+async def test_snapshot_table_data_returns_headers_and_rows():
+    s, page = _session_with_fake_page()
+    page.evaluate = AsyncMock(
+        return_value={
+            "headers": ["Name", "Email"],
+            "rows": [
+                ["Alice Admin", "alice@duke.com"],
+                ["Bob User", "bob@duke.com"],
+            ],
+        }
+    )
+    out = await s.snapshot_table_data()
+    assert out == {
+        "headers": ["Name", "Email"],
+        "rows": [["Alice Admin", "alice@duke.com"], ["Bob User", "bob@duke.com"]],
+    }
+    page.evaluate.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_snapshot_table_data_empty_when_no_table():
+    s, page = _session_with_fake_page()
+    page.evaluate = AsyncMock(return_value={"headers": [], "rows": []})
+    out = await s.snapshot_table_data()
+    assert out == {"headers": [], "rows": []}
+
+
+@pytest.mark.asyncio
+async def test_snapshot_table_data_empty_on_evaluate_error():
+    s, page = _session_with_fake_page()
+    page.evaluate = AsyncMock(side_effect=RuntimeError("evaluate boom"))
+    out = await s.snapshot_table_data()
+    assert out == {"headers": [], "rows": []}
+
+
+@pytest.mark.asyncio
+async def test_snapshot_table_data_caps_rows_cols_and_cell_length():
+    """A pathological table (too many rows, too many cols, huge cell text)
+    must never reach the caller uncapped — the caps are enforced in Python,
+    independent of whatever the page/JS hands back."""
+    oversized_rows = [
+        [f"cell-{r}-{c}-{'x' * 100}" for c in range(20)] for r in range(50)
+    ]
+    s, page = _session_with_fake_page()
+    page.evaluate = AsyncMock(
+        return_value={"headers": [f"H{i}" for i in range(20)], "rows": oversized_rows}
+    )
+    out = await s.snapshot_table_data()
+    assert len(out["rows"]) <= browser_mod.MAX_TABLE_ROWS
+    assert len(out["headers"]) <= browser_mod.MAX_TABLE_COLS
+    for row in out["rows"]:
+        assert len(row) <= browser_mod.MAX_TABLE_COLS
+        for cell in row:
+            assert len(cell) <= browser_mod.MAX_TABLE_CELL_CHARS
+
+
+@pytest.mark.asyncio
+async def test_snapshot_table_data_skips_empty_cells():
+    s, page = _session_with_fake_page()
+    page.evaluate = AsyncMock(
+        return_value={"headers": ["Name", ""], "rows": [["Alice", "", "  "]]}
+    )
+    out = await s.snapshot_table_data()
+    assert out["headers"] == ["Name"]
+    assert out["rows"] == [["Alice"]]
+
+
+@pytest.mark.asyncio
+async def test_snapshot_table_data_without_open_session_raises():
+    s = BrowserSession(base_url="https://x")
+    with pytest.raises(BrowserError, match="No active page"):
+        await s.snapshot_table_data()

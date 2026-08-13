@@ -34,6 +34,13 @@ DEFAULT_ACTION_TIMEOUT_MS = 15_000
 
 MAX_SNAPSHOT_ELEMENTS = 60
 
+# Hard caps for snapshot_table_data() — applied in Python regardless of what
+# the page/JS produces, so a pathological page (huge grid, long cell text)
+# can never bloat a translator prompt or a log line.
+MAX_TABLE_ROWS = 15
+MAX_TABLE_COLS = 6
+MAX_TABLE_CELL_CHARS = 40
+
 # Collect visible interactive elements, tag each with data-agent-ref="eN",
 # and return [{ref, tag, role, name}]. Capped at MAX_SNAPSHOT_ELEMENTS.
 _SNAPSHOT_JS = """
@@ -117,6 +124,37 @@ _SNAPSHOT_JS = """
     if (out.length >= maxN) return out;
   }
   return out;
+}
+"""
+
+
+# Collect the first visible <table>'s header + body cell text, uncapped —
+# Python applies MAX_TABLE_ROWS/COLS/CELL_CHARS afterwards so the cap holds
+# no matter what a page's markup looks like.
+_TABLE_SNAPSHOT_JS = """
+() => {
+  function text(el) { return (el.innerText || '').replace(/\\s+/g, ' ').trim(); }
+  for (const table of document.querySelectorAll('table')) {
+    const r = table.getBoundingClientRect();
+    const st = window.getComputedStyle(table);
+    const visible = r.width > 0 && r.height > 0 &&
+      st.visibility !== 'hidden' && st.display !== 'none';
+    if (!visible) continue;
+    let headerCells = table.querySelectorAll('thead th, thead td');
+    if (!headerCells.length) {
+      const firstRow = table.querySelector('tr');
+      headerCells = (firstRow && firstRow.querySelector('th'))
+        ? firstRow.querySelectorAll('th') : [];
+    }
+    const headers = Array.from(headerCells).map(text);
+    let bodyRows = Array.from(table.querySelectorAll('tbody tr'));
+    if (!bodyRows.length) {
+      bodyRows = Array.from(table.querySelectorAll('tr')).filter(tr => !tr.querySelector('th'));
+    }
+    const rows = bodyRows.map(tr => Array.from(tr.querySelectorAll('td')).map(text));
+    if (rows.length || headers.length) return {headers: headers, rows: rows};
+  }
+  return {headers: [], rows: []};
 }
 """
 
@@ -239,6 +277,52 @@ class BrowserSession:
         if len(elements) >= MAX_SNAPSHOT_ELEMENTS:
             log.warning("Element snapshot truncated to %d", MAX_SNAPSHOT_ELEMENTS)
         return elements
+
+    async def snapshot_table_data(self) -> dict[str, list]:
+        """Return the first visible on-page table as compact structured data.
+
+        `{"headers": [...], "rows": [[...], ...]}` — used to give the
+        translator real tabular values (e.g. a Users table's email column)
+        for steps that need a value which must already exist in the app,
+        rather than let the model invent one. Hard-capped at
+        MAX_TABLE_ROWS rows, MAX_TABLE_COLS cells per row, and
+        MAX_TABLE_CELL_CHARS characters per cell (longer cells are
+        truncated with an ellipsis) — enforced here in Python regardless of
+        what the page/JS produces, so this can never bloat a prompt or a log
+        line. Empty cells are dropped. Returns `{"headers": [], "rows": []}`
+        if there is no table on the page or evaluation fails — never raises
+        (except the same "no active page" guard as `snapshot_elements`).
+        """
+        if self._page is None:
+            raise BrowserError("No active page — call open_session() first")
+        try:
+            raw = await self._page.evaluate(_TABLE_SNAPSHOT_JS)
+        except Exception as e:  # page closed, JS error, etc.
+            log.warning("snapshot_table_data failed: %s", e)
+            return {"headers": [], "rows": []}
+        if not isinstance(raw, dict):
+            return {"headers": [], "rows": []}
+
+        def _cell(v: Any) -> str:
+            s = str(v or "").strip()
+            if len(s) > MAX_TABLE_CELL_CHARS:
+                s = s[: MAX_TABLE_CELL_CHARS - 1] + "…"
+            return s
+
+        raw_headers = raw.get("headers") or []
+        headers = [c for c in (_cell(h) for h in raw_headers[:MAX_TABLE_COLS]) if c]
+
+        raw_rows = raw.get("rows") or []
+        rows: list[list[str]] = []
+        for row in raw_rows[:MAX_TABLE_ROWS]:
+            cells = [c for c in (_cell(v) for v in (row or [])[:MAX_TABLE_COLS]) if c]
+            if cells:
+                rows.append(cells)
+
+        if len(raw_rows) > MAX_TABLE_ROWS:
+            log.warning("Table snapshot truncated to %d rows", MAX_TABLE_ROWS)
+
+        return {"headers": headers, "rows": rows}
 
     # -------------------------------------------------------------- dispatcher
 
