@@ -316,20 +316,45 @@ target by `ref`. The orchestrator snapshots before translating and re-snapshots 
 re-translates + retries a step once on a browser action failure (DOM-grounded
 actions — see the 2026-06-30 spec).
 
-**Evaluator model migration (gpt-4o → gpt-4.1, in progress, unvalidated):**
-`gpt-4o` is deprecated in Azure; the migration target for
-`AZURE_AI_EVALUATOR_DEPLOYMENT` is the `gpt-4.1` family. The evaluator prompt
-loads from whichever file `EVALUATOR_PROMPT_FILE` names (default
-`result_evaluator.txt`, unchanged behaviour when the var is unset).
-`prompts/result_evaluator_41.txt` is a gpt-4.1-tuned candidate — same rules,
-with the rule-precedence made explicit and the "when in doubt, choose fail"
-line bounded to not override the `blocked` rules — but it is **unvalidated**:
-no live judgments have been run against it. Before flipping either env var,
-validate the candidate with `scripts/prompt_eval/` (extended to compare
-deployment × prompt-file combinations — verdict distribution, flip rate,
-disagreement vs. a baseline, and reasons) against captured real inputs. Only
-flip `AZURE_AI_EVALUATOR_DEPLOYMENT` / `EVALUATOR_PROMPT_FILE` once that
-comparison looks acceptable.
+**Evaluator model: gpt-4.1 (migrated 2026-08-13, measured).** `gpt-4o` is
+deprecated in Azure, so `AZURE_AI_EVALUATOR_DEPLOYMENT=gpt-4.1` with the
+**unmodified** `prompts/result_evaluator.txt`. gpt-4o remains deployed, so the
+revert is one env var.
+
+The migration was decided by measurement, not by reading model cards.
+`scripts/prompt_eval/compare_combinations.py` judges one captured input N times
+per (deployment × prompt file) combination and reports verdict distribution,
+**flip rate** (same input, different verdicts across identical runs — the
+failure mode that disqualified a mini-tier evaluator in 2026-07), disagreement
+vs. a nominated baseline, and the reason strings. Result on
+`eval_input_tc2_step4.json`, N=5:
+
+| combination | verdicts | flip rate | vs baseline |
+|---|---|---|---|
+| `gpt-4o` × `result_evaluator.txt` (baseline) | pass 5/5 | 0% | — |
+| `gpt-4.1` × `result_evaluator.txt` | pass 5/5 | 0% | 0% |
+| `gpt-4.1` × `result_evaluator_41.txt` | pass 4, fail 1 | **20%** | 20% |
+
+**The three-combination design is the point:** the middle row isolates the model
+change from the prompt change. Without it, the third row's regression would have
+been misattributed to gpt-4.1 when it was caused by the prompt edit.
+
+`prompts/result_evaluator_41.txt` is **DISQUALIFIED** and kept only as the
+record of that negative result (it carries a header saying so; a few
+`tests/test_azure_ai.py` cases use it as the override fixture). Its additions —
+explicit rule precedence, bounding the doubt rule — were meant to stop a literal
+instruction-follower over-producing `fail`, and did the opposite: they added
+non-determinism, and the failing run cited insufficient evidence, which that
+file's own precedence block says must route to `blocked`. gpt-4.1 needs no
+prompt changes.
+
+`EVALUATOR_PROMPT_FILE` selects the evaluator's prompt file (default
+`result_evaluator.txt`; behaviour unchanged when unset). Any future candidate
+prompt or model goes through the harness above before either env var is flipped.
+**Coverage caveat:** the decision rests on ONE captured step, and an easy one.
+Capture the hard case (TC-2 step 3 — a 20-item multi-frame checklist) and a
+should-obviously-fail control with `capture_eval_inputs.py`, and re-run the
+comparison, before treating the migration as fully proven.
 
 ### agent/browser.py
 Playwright async wrapper. Methods: `open_session`, `execute_action`, `screenshot`

@@ -1,3 +1,18 @@
+### DISQUALIFIED — DO NOT SET EVALUATOR_PROMPT_FILE TO THIS FILE ###
+# Kept only as the record of a measured negative result. Measured 2026-08-13 on
+# eval_input_tc2_step4.json, 5 judgments per combination:
+#   gpt-4o  x result_evaluator.txt     pass 5/5, flip rate 0%   (baseline)
+#   gpt-4.1 x result_evaluator.txt     pass 5/5, flip rate 0%,  0% disagreement
+#   gpt-4.1 x result_evaluator_41.txt  pass 4 / FAIL 1, flip rate 20%
+# This variant's additions (explicit rule precedence + bounding the doubt rule)
+# were meant to stop a literal instruction-follower over-producing "fail". They
+# did the opposite: they introduced non-determinism, and the one failing run
+# cited insufficient evidence — which this file's own precedence block says must
+# route to "blocked", not "fail". gpt-4.1 needs NO prompt changes: it matches
+# gpt-4o exactly on the unmodified prompt. Lesson stands — an unvalidated prompt
+# edit is a liability, and only a measurement can tell you which way it cut.
+### END DISQUALIFIED NOTICE ###
+
 You evaluate whether a Sous Chef Cloud screenshot satisfies the expected result
 of a QA test step.
 
