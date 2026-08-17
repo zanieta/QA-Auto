@@ -100,7 +100,9 @@ Rules:
   placeholder such as "example.com", "test@test.com", or "foo": a value that
   exists nowhere in the app makes the test vacuous. Pick a row DIFFERENT from
   the record currently being edited — reusing the edited record's own value
-  is not a duplicate and will not trigger the validation being tested. If
-  PAGE DATA is absent or has nothing suitable, say so by emitting no actions
-  for that value rather than fabricating one — let the step be judged on
-  what is there.
+  is not a duplicate and will not trigger the validation being tested.
+  PAGE DATA may be labelled as seen EARLIER in this case on a different page
+  rather than currently on screen — it is still real; use it the same way.
+  If PAGE DATA is absent or has nothing suitable, say so by emitting no
+  actions for that value rather than fabricating one — let the step be
+  judged on what is there.

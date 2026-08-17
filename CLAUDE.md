@@ -413,6 +413,48 @@ context is unchanged and `snapshot_table_data` is never called. PAGE DATA can
 carry real user emails — that's fine in a model prompt, but it must never
 reach a log line, `run_state`, or an SSE event; only its row count is logged.
 
+**Carry-forward table memory (2026-08-13 fix).** The live run of TC-2915 above
+still failed: the 12 real emails are on the Users list at step 0, but by step
+2 (the triggering step) the case is on the Edit User page, which has no
+table — reading only the *current* page can't work for any test that
+navigates away from the list before it needs the value. `_execute_case`
+creates one `_TableMemory()` per case (a plain local variable threaded through
+`_execute_step`/`_attempt_step` as an argument — **never stored on `self`** —
+so it is scoped to exactly one case and can never leak into the next case's
+context) and passes it down. After any action that navigates, `_attempt_step`
+opportunistically calls `_capture_table_opportunistically` — cheap, no model
+tokens — and remembers the page's table if non-empty, replacing whatever was
+remembered before; this is what lets the Users-list step (which never itself
+triggers PAGE DATA) leave its table available for step 2. `_build_page_data_block`
+still prefers the current page's table when non-empty (and refreshes the
+memory from it too); only when the current page has nothing does it fall back
+to the remembered table, and it labels that block as "seen earlier in this
+case on `<url>`" so the model knows the values are real but not currently on
+screen. `prompts/step_translator.txt`'s PAGE DATA rule got one additive
+sentence permitting values seen earlier in the case — nothing else in that
+prompt changed (a broader, unvalidated edit already cost this project one
+disqualified evaluator-prompt variant; see the notice atop
+`prompts/result_evaluator_41.txt`).
+
+**Step-attempt retries never repeat a clean run for a bad verdict (2026-08-13
+fix).** The retry/escalation loop (`self.step_attempts`) exists for "the agent
+could not perform the action" — a `BrowserError` or a translate failure. A
+live run showed it also firing when every action succeeded and only the
+*evaluator's verdict* was non-pass (e.g. Save clicked fine, but the saved
+value didn't match): retrying can't change a verdict about the app's
+behaviour, and for a committing action (Save/Delete/Submit) it only re-mutates
+the system under test. `_attempt_step` now returns a 4th value, `execution_ok`
+— True only when every action performed this attempt succeeded and evaluation
+was reached with no `BrowserError` and no translate failure along the way
+(the "judge on partial evidence after persistent errors" paths are NOT
+`execution_ok`, since those did hit a real problem and still deserve a retry).
+`_execute_step` skips remaining attempts when `status != "pass" and
+execution_ok and not is_last`, logging at INFO with the step and verdict. The
+"NEEDS HUMAN REVIEW (N agent attempts)" suffix now reports attempts actually
+used (`attempt`, not `attempts_max`), so a skip correctly reads "(1 agent
+attempts)". `STEP_MAX_ATTEMPTS`'s default and meaning for genuine action
+failures are unchanged.
+
 ### agent/reporter.py
 After a run, generates `reports/run_<timestamp>_<run_id>.html`: self-contained HTML
 (inline CSS, Duke navy palette) with totals + per-case table showing status,

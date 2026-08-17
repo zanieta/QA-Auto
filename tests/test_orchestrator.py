@@ -60,6 +60,9 @@ def _fake_browser():
     b.wait_for_settle = AsyncMock()
     b.execute_action = AsyncMock()
     b.snapshot_elements = AsyncMock(return_value=[{"ref": "e1", "tag": "a", "role": "link", "name": "Go"}])
+    # No table on the page by default — tests that care about PAGE DATA
+    # override this with their own AsyncMock (see the PAGE DATA test class).
+    b.snapshot_table_data = AsyncMock(return_value={"headers": [], "rows": []})
     return b
 
 
@@ -917,25 +920,31 @@ async def test_guidance_lookup_exception_does_not_fail_step():
 
 @pytest.mark.asyncio
 async def test_step_retries_on_fail_and_passes_on_third_attempt():
-    """fail, fail, pass -> the step resolves pass. Attempts 2-3 carry an
-    escalating-exploration prefix in the translator context naming the
-    attempt number and the previous attempt's verdict/reason. resolve_step
-    fires exactly once (the pass overwrites nothing — verified by the final
-    evaluation text matching the LAST evaluate call, not an earlier one)."""
+    """The action genuinely fails to perform (BrowserError) on attempts 1-2,
+    then succeeds and evaluates pass on attempt 3 -> the step resolves pass.
+    This is the "could not perform the action" case the retry loop exists
+    for (2026-08-13: a clean-execution/evaluator-fail step no longer retries
+    — see test_clean_execution_fail_verdict_consumes_one_attempt below).
+    Attempts 2-3 carry an escalating-exploration prefix in the translator
+    context naming the attempt number and the previous attempt's
+    verdict/reason. resolve_step fires exactly once (the pass overwrites
+    nothing)."""
     from agent.run_state import RunState
 
     cases = [{"id": "A", "name": "Alpha", "steps": [
         {"action": "Click go", "expected": "Loaded"},
     ]}]
+    # Two rounds of translate+execute per failing attempt (the loop needs two
+    # CONSECUTIVE error rounds before giving up on an attempt with no
+    # executed actions), then one clean round for the passing attempt.
     azure = _fake_azure(
-        translate_side_effect=[_ok_actions(), _ok_actions(), _ok_actions()],
-        evaluate_side_effect=[
-            {"status": "fail", "reason": "no dialog"},
-            {"status": "fail", "reason": "still no dialog"},
-            {"status": "pass", "reason": "Loaded"},
-        ],
+        translate_side_effect=[_ok_actions()] * 5,
+        evaluate_side_effect=[{"status": "pass", "reason": "Loaded"}],
     )
     browser = _fake_browser()
+    browser.execute_action = AsyncMock(
+        side_effect=[BrowserError("boom")] * 4 + [None]
+    )
     orch = Orchestrator(
         azure=azure,
         browser_factory=lambda: browser,
@@ -958,33 +967,35 @@ async def test_step_retries_on_fail_and_passes_on_third_attempt():
     assert step.evaluation == "Loaded"
     assert len(resolve_calls) == 1  # resolve_step fired exactly once for the step
 
-    assert azure.translate_step.await_count == 3
-    assert azure.evaluate_result.await_count == 3
-    ctx2 = azure.translate_step.call_args_list[1].kwargs["app_context"]
-    assert "ATTEMPT 2 of 3" in ctx2 and "no dialog" in ctx2
+    assert azure.translate_step.await_count == 5
+    assert azure.evaluate_result.await_count == 1
     ctx3 = azure.translate_step.call_args_list[2].kwargs["app_context"]
-    assert "ATTEMPT 3 of 3" in ctx3 and "still no dialog" in ctx3
+    assert "ATTEMPT 2 of 3" in ctx3 and "boom" in ctx3
+    ctx5 = azure.translate_step.call_args_list[4].kwargs["app_context"]
+    assert "ATTEMPT 3 of 3" in ctx5 and "boom" in ctx5
 
 
 @pytest.mark.asyncio
 async def test_step_exhausts_all_attempts_and_escalates_to_human_review():
-    """always-fail -> exactly 3 attempts, final evaluation ends with the
-    NEEDS HUMAN REVIEW suffix, step status stays fail, and the CASE
-    CONTINUES to later steps rather than stopping."""
+    """The action genuinely fails to perform (BrowserError) on every attempt
+    -> exactly 3 attempts, final evaluation ends with the NEEDS HUMAN REVIEW
+    suffix, step status stays fail, and the CASE CONTINUES to later steps
+    rather than stopping. Step 1 never reaches the evaluator at all (nothing
+    executed) — evaluate_result is only called for step 2."""
     cases = [{"id": "A", "name": "Alpha", "steps": [
         {"action": "Click go", "expected": "Loaded"},
         {"action": "Click again", "expected": "Done"},
     ]}]
+    # Step 1: 3 attempts x 2 rounds each (both raise) = 6 translate calls.
+    # Step 2: 1 clean attempt = 1 translate call. Total 7.
     azure = _fake_azure(
-        translate_side_effect=[_ok_actions()] * 4,
-        evaluate_side_effect=[
-            {"status": "fail", "reason": "no dialog"},
-            {"status": "fail", "reason": "still no dialog"},
-            {"status": "fail", "reason": "final no dialog"},
-            {"status": "pass", "reason": "Done"},
-        ],
+        translate_side_effect=[_ok_actions()] * 7,
+        evaluate_side_effect=[{"status": "pass", "reason": "Done"}],
     )
     browser = _fake_browser()
+    browser.execute_action = AsyncMock(
+        side_effect=[BrowserError("boom")] * 6 + [None]
+    )
     orch = Orchestrator(
         azure=azure,
         browser_factory=lambda: browser,
@@ -997,11 +1008,11 @@ async def test_step_exhausts_all_attempts_and_escalates_to_human_review():
 
     assert step1.status == "fail"
     assert step1.evaluation.endswith("NEEDS HUMAN REVIEW (3 agent attempts)")
-    assert "final no dialog" in step1.evaluation
+    assert "boom" in step1.evaluation
     assert step2.status == "pass"  # case continued past the exhausted step
     assert case.status == "fail"
-    assert azure.translate_step.await_count == 4
-    assert azure.evaluate_result.await_count == 4
+    assert azure.translate_step.await_count == 7
+    assert azure.evaluate_result.await_count == 1
 
 
 @pytest.mark.asyncio
@@ -1339,3 +1350,223 @@ async def test_triggering_step_with_no_table_adds_no_page_data_block():
     ctx = azure.translate_step.call_args_list[0].kwargs["app_context"]
     assert "PAGE DATA" not in ctx
     browser.snapshot_table_data.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_triggering_step_falls_back_to_table_remembered_earlier_in_case():
+    """Step 0 ("Open the Users list") navigates to a page with a real users
+    table. It doesn't itself match the existing-data phrases, so it never
+    asks for PAGE DATA — but its table is opportunistically remembered for
+    the case. Step 1 triggers PAGE DATA, but by then the case is on the Edit
+    User page, which has no table — it must fall back to what was
+    remembered, and the block must say the values were seen EARLIER in the
+    case (labelled with the URL captured), not presented as current."""
+    cases = [{"id": "A", "name": "Alpha", "steps": [
+        {"action": "Open the Users list", "expected": ""},
+        {
+            "action": (
+                "Update the Email Address field with an email address that "
+                "is already assigned to another User."
+            ),
+            "expected": "An error is shown and the edit is rejected",
+        },
+    ]}]
+    azure = _fake_azure(
+        translate_side_effect=[_ok_actions(), [], _ok_actions()],
+        evaluate_side_effect=[
+            {"status": "pass", "reason": "ok"},
+            {"status": "pass", "reason": "ok"},
+        ],
+    )
+    browser = _fake_browser()
+    url_state = {"url": "https://app/"}
+
+    async def _current_url():
+        return url_state["url"]
+
+    async def _execute_action(action):
+        url_state["url"] = "https://app/users"
+
+    browser.current_url = AsyncMock(side_effect=_current_url)
+    browser.execute_action = AsyncMock(side_effect=_execute_action)
+    browser.snapshot_table_data = AsyncMock(side_effect=[
+        {"headers": ["Name", "Email"], "rows": [["Alice Admin", "alice@duke.com"]]},
+        {"headers": [], "rows": []},
+    ])
+    orch = Orchestrator(
+        azure=azure,
+        browser_factory=lambda: browser,
+        case_source=FakeCaseSource({"key": "X", "name": "x"}, cases),
+        on_update=lambda s: None,
+        step_attempts=1,
+    )
+    await orch.run_single_case("A")
+
+    ctx = azure.translate_step.call_args_list[2].kwargs["app_context"]
+    assert "PAGE DATA" in ctx
+    assert "alice@duke.com" in ctx
+    assert "seen earlier in this case" in ctx
+    assert "https://app/users" in ctx
+
+
+@pytest.mark.asyncio
+async def test_current_page_table_wins_over_remembered_table():
+    """If the triggering step's OWN current page has a (different, non-empty)
+    table, that wins over anything remembered from earlier in the case."""
+    cases = [{"id": "A", "name": "Alpha", "steps": [
+        {"action": "Open the Users list", "expected": ""},
+        {
+            "action": (
+                "Update the Email Address field with an email address that "
+                "is already assigned to another User."
+            ),
+            "expected": "An error is shown and the edit is rejected",
+        },
+    ]}]
+    azure = _fake_azure(
+        translate_side_effect=[_ok_actions(), [], _ok_actions()],
+        evaluate_side_effect=[
+            {"status": "pass", "reason": "ok"},
+            {"status": "pass", "reason": "ok"},
+        ],
+    )
+    browser = _fake_browser()
+    url_state = {"url": "https://app/"}
+
+    async def _current_url():
+        return url_state["url"]
+
+    async def _execute_action(action):
+        url_state["url"] = "https://app/users"
+
+    browser.current_url = AsyncMock(side_effect=_current_url)
+    browser.execute_action = AsyncMock(side_effect=_execute_action)
+    browser.snapshot_table_data = AsyncMock(side_effect=[
+        {"headers": ["Name", "Email"], "rows": [["Alice Admin", "alice@duke.com"]]},
+        {"headers": ["Name", "Email"], "rows": [["Carol Current", "carol@duke.com"]]},
+    ])
+    orch = Orchestrator(
+        azure=azure,
+        browser_factory=lambda: browser,
+        case_source=FakeCaseSource({"key": "X", "name": "x"}, cases),
+        on_update=lambda s: None,
+        step_attempts=1,
+    )
+    await orch.run_single_case("A")
+
+    ctx = azure.translate_step.call_args_list[2].kwargs["app_context"]
+    assert "carol@duke.com" in ctx
+    assert "alice@duke.com" not in ctx
+    assert "seen earlier in this case" not in ctx
+
+
+@pytest.mark.asyncio
+async def test_table_memory_does_not_leak_across_cases():
+    """The table remembered in case A must never reach case B's translator
+    context, even within the same orchestrator/run — table memory is
+    per-case, created fresh in `_execute_case`."""
+    cases = [
+        {"id": "A", "name": "Alpha", "steps": [
+            {"action": "Open the Users list", "expected": ""},
+        ]},
+        {"id": "B", "name": "Beta", "steps": [
+            {"action": "Use a name that already exists", "expected": "Rejected"},
+        ]},
+    ]
+    azure = _fake_azure(
+        translate_side_effect=[_ok_actions(), [], _ok_actions()],
+        evaluate_side_effect=[
+            {"status": "pass", "reason": "ok"},
+            {"status": "pass", "reason": "ok"},
+        ],
+    )
+    browser = _fake_browser()
+    url_state = {"url": "https://app/"}
+
+    async def _current_url():
+        return url_state["url"]
+
+    async def _execute_action(action):
+        url_state["url"] = "https://app/users"  # only changes value once
+
+    browser.current_url = AsyncMock(side_effect=_current_url)
+    browser.execute_action = AsyncMock(side_effect=_execute_action)
+    browser.snapshot_table_data = AsyncMock(side_effect=[
+        {"headers": ["Name", "Email"], "rows": [["Alice Admin", "alice@duke.com"]]},
+        {"headers": [], "rows": []},
+    ])
+    orch = Orchestrator(
+        azure=azure,
+        browser_factory=lambda: browser,
+        case_source=FakeCaseSource({"key": "X", "name": "x"}, cases),
+        on_update=lambda s: None,
+        step_attempts=1,
+    )
+    await orch.run_plan("X")
+
+    # Case B's (only) translate call is the third overall (case A used two).
+    ctx_b = azure.translate_step.call_args_list[2].kwargs["app_context"]
+    assert "PAGE DATA" not in ctx_b
+    assert "alice@duke.com" not in ctx_b
+
+
+# ----- retry-scoping: an evaluator verdict on a clean run doesn't retry ----
+
+
+@pytest.mark.asyncio
+async def test_clean_execution_fail_verdict_consumes_one_attempt():
+    """All actions execute without error; the evaluator says fail. Retrying
+    cannot change an evaluator verdict about the app's behaviour, and for a
+    committing action would only re-mutate the system under test — so only
+    ONE attempt is used even though step_attempts allows 3."""
+    cases = [{"id": "A", "name": "Alpha", "steps": [
+        {"action": "Click Save", "expected": "Record saved"},
+    ]}]
+    azure = _fake_azure(
+        translate_side_effect=[_ok_actions()],
+        evaluate_side_effect=[{"status": "fail", "reason": "still shows old value"}],
+    )
+    browser = _fake_browser()
+    orch = Orchestrator(
+        azure=azure,
+        browser_factory=lambda: browser,
+        case_source=FakeCaseSource({"key": "X", "name": "x"}, cases),
+        on_update=lambda s: None,
+        step_attempts=3,
+    )
+    state = await orch.run_single_case("A")
+
+    step = state.test_cases[0].steps[0]
+    assert step.status == "fail"
+    assert step.evaluation.endswith("NEEDS HUMAN REVIEW (1 agent attempts)")
+    assert azure.translate_step.await_count == 1
+    assert azure.evaluate_result.await_count == 1
+    assert browser.execute_action.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_clean_execution_blocked_verdict_consumes_one_attempt():
+    """Same as above but the evaluator returns 'blocked' — still a verdict on
+    a clean execution, still exactly one attempt."""
+    cases = [{"id": "A", "name": "Alpha", "steps": [
+        {"action": "Click Save", "expected": "Record saved"},
+    ]}]
+    azure = _fake_azure(
+        translate_side_effect=[_ok_actions()],
+        evaluate_side_effect=[{"status": "blocked", "reason": "session expired"}],
+    )
+    browser = _fake_browser()
+    orch = Orchestrator(
+        azure=azure,
+        browser_factory=lambda: browser,
+        case_source=FakeCaseSource({"key": "X", "name": "x"}, cases),
+        on_update=lambda s: None,
+        step_attempts=3,
+    )
+    state = await orch.run_single_case("A")
+
+    step = state.test_cases[0].steps[0]
+    assert step.status == "blocked"
+    assert step.evaluation.endswith("NEEDS HUMAN REVIEW (1 agent attempts)")
+    assert azure.translate_step.await_count == 1
+    assert azure.evaluate_result.await_count == 1

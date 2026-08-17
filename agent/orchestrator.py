@@ -71,6 +71,66 @@ def _step_needs_existing_data(action_text: str, expected: str) -> bool:
     return any(phrase in haystack for phrase in _EXISTING_DATA_PHRASES)
 
 
+_PAGE_DATA_HEADER_CURRENT = (
+    "PAGE DATA — real values currently visible on this page in the "
+    "application (not invented). Use these for any value that must "
+    "already exist (e.g. a duplicate email); never fabricate a "
+    "placeholder like example.com or test@test.com."
+)
+
+
+def _page_data_header_remembered(url: str) -> str:
+    """Header for a PAGE DATA block built from a table seen earlier in the
+    case rather than the current page — the model must know the values are
+    real but not currently on screen, and where they came from."""
+    return (
+        f"PAGE DATA — real values seen earlier in this case on {url} "
+        "(not currently on screen, but real — not invented). Use these for "
+        "any value that must already exist (e.g. a duplicate email); never "
+        "fabricate a placeholder like example.com or test@test.com."
+    )
+
+
+def _format_page_data_lines(header: str, table: dict) -> str:
+    lines = [header]
+    headers = table.get("headers") or []
+    if headers:
+        lines.append(" | ".join(headers))
+    for row in table.get("rows") or []:
+        lines.append(" | ".join(row))
+    return "\n".join(lines)
+
+
+class _TableMemory:
+    """Remembers the most recent non-empty on-page table seen during ONE case.
+
+    A fresh instance is created in `_execute_case` for every case and passed
+    down as a plain argument — it is never stored on `self` — so values seen
+    in one case (e.g. a Users list's real emails) can never leak into the
+    next case's translator context. Updated by two callers that both funnel
+    through `remember()` so "most recent non-empty" is a single rule: the
+    opportunistic post-navigation capture in `_attempt_step`, and the
+    PAGE DATA block builder's own current-page fetch in
+    `_build_page_data_block`.
+    """
+
+    def __init__(self) -> None:
+        self.headers: list[str] = []
+        self.rows: list[list[str]] = []
+        self.url: str = ""
+
+    def remember(self, table: dict, url: str) -> None:
+        rows = table.get("rows") or []
+        if rows:
+            self.headers = table.get("headers") or []
+            self.rows = rows
+            self.url = url
+
+    @property
+    def has_data(self) -> bool:
+        return bool(self.rows)
+
+
 class Orchestrator:
     def __init__(
         self,
@@ -303,6 +363,13 @@ class Orchestrator:
                 lines.append(f"  {i + 1}. {text}  [{marker}]")
             return "\n".join(lines)
 
+        # Per-case PAGE DATA memory (2026-08-13 carry-forward fix): a page a
+        # test navigates away from (e.g. a Users list) may hold the only real
+        # values a later step needs (e.g. a duplicate email on the Edit User
+        # page). Fresh per case — see `_TableMemory` docstring for why it is
+        # never stored on `self`.
+        table_memory = _TableMemory()
+
         outcome: str = "pass"
         try:
             # tape_index (position in the executed sequence) is what resolve_step
@@ -314,6 +381,7 @@ class Orchestrator:
                 step_outcome = await self._execute_step(
                     state, case_id, tape_index, step, browser, dry_run=dry_run,
                     case_context=_case_brief(orig_index), orig_index=orig_index,
+                    table_memory=table_memory,
                 )
                 step_status[orig_index] = step_outcome
                 if step_outcome == "fail":
@@ -346,6 +414,7 @@ class Orchestrator:
         dry_run: bool = False,
         case_context: str = "",
         orig_index: int | None = None,
+        table_memory: "_TableMemory | None" = None,
     ) -> str:
         """Run one step. Returns 'pass' | 'fail' | 'blocked'.
 
@@ -367,6 +436,9 @@ class Orchestrator:
         `step_index`/tape position when `step_indices` filters the run) — it's
         the key used to look up tester-guidance knowledge for this exact step.
         `step_index` keeps indexing the run_state tape unchanged.
+
+        `table_memory` is the case's `_TableMemory` (see `_execute_case`) —
+        threaded through so a step can both use and refresh it.
         """
         if orig_index is None:
             orig_index = step_index
@@ -426,17 +498,32 @@ class Orchestrator:
                     "before concluding."
                 )
 
-            status, reason, png_b64 = await self._attempt_step(
+            status, reason, png_b64, execution_ok = await self._attempt_step(
                 state, rs_step, case_id, orig_index, action_text, expected, browser,
                 case_context=case_context, escalation=escalation,
+                table_memory=table_memory,
             )
 
+            # A non-pass verdict on a CLEAN execution is the evaluator's
+            # judgement of the app, not a failure to drive it. Retrying cannot
+            # change that judgement, and re-running a committing action (Save,
+            # Delete, Submit) would mutate the system under test again — which
+            # has already cost this project one account setting. So spend
+            # further attempts only when something actually went wrong.
+            verdict_is_final = status != "pass" and execution_ok
+            if verdict_is_final and attempt < attempts_max:
+                log.info(
+                    "Step %s/%s judged %s on a clean execution — not retrying "
+                    "(%d of %d attempts used)",
+                    case_id, orig_index, status, attempt, attempts_max,
+                )
+
             is_last = attempt == attempts_max
-            if status == "pass" or is_last:
+            if status == "pass" or is_last or verdict_is_final:
                 final_reason = reason
                 if status != "pass":
                     final_reason = (
-                        f"{reason} — NEEDS HUMAN REVIEW ({attempts_max} agent attempts)"
+                        f"{reason} — NEEDS HUMAN REVIEW ({attempt} agent attempts)"
                     )
                 duration = time.monotonic() - start
                 state.resolve_step(case_id, step_index, status, final_reason, duration,
@@ -463,14 +550,17 @@ class Orchestrator:
         browser: BrowserSession,
         case_context: str,
         escalation: str,
-    ) -> tuple[str, str, str | None]:
+        table_memory: "_TableMemory | None" = None,
+    ) -> tuple[str, str, str | None, bool]:
         """Run ONE attempt: the act -> observe loop, then screenshot + evaluate.
 
-        Returns `(status, reason, screenshot_b64)`. `status` is one of
-        'pass' | 'fail' | 'blocked'. `screenshot_b64` is the final frame when
-        evaluation was reached, else None (translate failure or an action
-        failure with nothing yet executed — same "no evidence" cases the old
-        single-attempt code returned immediately on).
+        Returns `(status, reason, screenshot_b64, execution_ok)`. `status` is
+        one of 'pass' | 'fail' | 'blocked'. `screenshot_b64` is the final
+        frame when evaluation was reached, else None (translate failure or an
+        action failure with nothing yet executed — same "no evidence" cases
+        the old single-attempt code returned immediately on). `execution_ok`
+        is a placeholder `True` for now (wired up by the retry-scoping fix in
+        the next commit).
 
         A navigation stales every ref from the snapshot, so after any action
         that changes the page URL we re-observe (fresh snapshot) and let the
@@ -540,7 +630,9 @@ class Orchestrator:
                 context = f"{escalation}\n{context}"
             if needs_page_data:
                 if page_data_block is None:
-                    page_data_block = await self._build_page_data_block(browser)
+                    page_data_block = await self._build_page_data_block(
+                        browser, table_memory
+                    )
                 if page_data_block:
                     context += f"\n{page_data_block}"
 
@@ -551,7 +643,9 @@ class Orchestrator:
             except AzureAIError as e:
                 if executed_actions:
                     break  # judge on the evidence gathered so far
-                return "blocked", f"Could not translate step: {e}", None
+                # Translation never happened — an execution problem, so a
+                # retry has something new to try.
+                return "blocked", f"Could not translate step: {e}", None, False
 
             if not actions:
                 break  # model signals the step's goal is complete
@@ -587,6 +681,11 @@ class Orchestrator:
                     except Exception:
                         pass  # a lost frame never fails the step
                 if navigated:
+                    # A page we just navigated to may hold the only real
+                    # values a LATER step in this case needs (carry-forward
+                    # fix, 2026-08-13) — opportunistic, cheap, no model
+                    # tokens; never affects this step on failure.
+                    await self._capture_table_opportunistically(browser, table_memory)
                     break  # refs are stale — re-observe the new page
 
             prev_round_had_actions = len(executed_actions) > actions_before
@@ -595,7 +694,9 @@ class Orchestrator:
                 consecutive_error_rounds += 1
                 if consecutive_error_rounds >= 2:
                     if not executed_actions:
-                        return "fail", last_error, None
+                        # Nothing ran: the agent could not act at all, which is
+                        # exactly what a retry exists for.
+                        return "fail", last_error, None, False
                     break  # persistent errors — judge on the evidence gathered
                 continue  # re-observe with the error in context
             consecutive_error_rounds = 0
@@ -628,43 +729,98 @@ class Orchestrator:
                 guidance=guidance,
             )
         except (BrowserError, AzureAIError) as e:
-            return "fail", f"Could not evaluate result: {e}", None
+            # Screenshot or evaluator call blew up — no verdict was reached, so
+            # a retry is worth spending.
+            return "fail", f"Could not evaluate result: {e}", None, False
 
         status = evaluation["status"]
         if status not in ("pass", "fail", "blocked"):
             status = "fail"
-        return status, evaluation["reason"], png_b64
+        # Clean execution: the actions ran and the EVALUATOR produced this
+        # verdict. Retrying cannot change a verdict about the app's behaviour.
+        return status, evaluation["reason"], png_b64, True
 
-    async def _build_page_data_block(self, browser: BrowserSession) -> str:
-        """Build a PAGE DATA block from the current page's on-screen table.
+    async def _capture_table_opportunistically(
+        self, browser: BrowserSession, table_memory: "_TableMemory | None"
+    ) -> None:
+        """After a navigation, opportunistically remember this page's table.
 
-        Returns "" if there is no suitable table (never raises — a snapshot
-        problem must not affect the step). The block may contain real values
-        such as user emails, which is fine for a model prompt, but it must
-        NEVER be written to a log line, run_state, or an SSE event — only the
-        row count is logged.
+        Cheap DOM query, no model tokens. A step that never triggers PAGE
+        DATA itself (e.g. the "click Users" step that lands on the Users
+        list) may still be the ONLY point in the case where a later,
+        triggering step's needed values are on screen — this is what makes
+        that value available then. Silently does nothing on failure, an
+        empty page, or a missing `table_memory` — a snapshot problem must
+        never affect the step. Only the row count is ever logged; table
+        content (e.g. real emails) never reaches a log line.
+        """
+        if table_memory is None:
+            return
+        try:
+            table = await browser.snapshot_table_data()
+        except Exception:
+            log.warning("snapshot_table_data failed during opportunistic capture", exc_info=True)
+            return
+        rows = table.get("rows") or []
+        if not rows:
+            return
+        try:
+            url = await browser.current_url()
+        except Exception:
+            url = ""
+        table_memory.remember(table, url)
+        log.info(
+            "Remembered on-page table for later PAGE DATA fallback: %d row(s) at %s",
+            len(rows), url,
+        )
+
+    async def _build_page_data_block(
+        self, browser: BrowserSession, table_memory: "_TableMemory | None" = None
+    ) -> str:
+        """Build a PAGE DATA block, preferring the current page's table.
+
+        Falls back to `table_memory` (the case's most recent non-empty table
+        seen on an earlier page) when the current page has none — the value
+        a negative-path step needs (e.g. a duplicate email) is often on a
+        list page the case navigated away from before this step ran. Returns
+        "" if neither source has anything (never raises — a snapshot problem
+        must not affect the step). The block may contain real values such as
+        user emails, which is fine for a model prompt, but it must NEVER be
+        written to a log line, run_state, or an SSE event — only row counts
+        and URLs are logged.
         """
         try:
             table = await browser.snapshot_table_data()
         except Exception:
             log.warning("snapshot_table_data failed", exc_info=True)
-            return ""
+            table = {"headers": [], "rows": []}
+
         rows = table.get("rows") or []
-        if not rows:
-            return ""
-        log.info("Attaching PAGE DATA block to translator context: %d row(s)", len(rows))
-        lines = [
-            "PAGE DATA — real values currently visible on this page in the "
-            "application (not invented). Use these for any value that must "
-            "already exist (e.g. a duplicate email); never fabricate a "
-            "placeholder like example.com or test@test.com."
-        ]
-        headers = table.get("headers") or []
-        if headers:
-            lines.append(" | ".join(headers))
-        for row in rows:
-            lines.append(" | ".join(row))
-        return "\n".join(lines)
+        if rows:
+            if table_memory is not None:
+                try:
+                    url = await browser.current_url()
+                except Exception:
+                    url = ""
+                table_memory.remember(table, url)
+            log.info(
+                "Attaching PAGE DATA block to translator context: %d row(s) "
+                "from the current page", len(rows),
+            )
+            return _format_page_data_lines(_PAGE_DATA_HEADER_CURRENT, table)
+
+        if table_memory is not None and table_memory.has_data:
+            log.info(
+                "Attaching PAGE DATA block to translator context: %d row(s) "
+                "remembered from earlier in this case (captured on %s)",
+                len(table_memory.rows), table_memory.url,
+            )
+            return _format_page_data_lines(
+                _page_data_header_remembered(table_memory.url),
+                {"headers": table_memory.headers, "rows": table_memory.rows},
+            )
+
+        return ""
 
     async def _create_bug(self, state: RunState, case_id: str) -> None:
         """Stub — wire up once jira_client is implemented."""
