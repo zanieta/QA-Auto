@@ -134,6 +134,7 @@ _SNAPSHOT_JS = """
 _TABLE_SNAPSHOT_JS = """
 () => {
   function text(el) { return (el.innerText || '').replace(/\\s+/g, ' ').trim(); }
+  let pendingHeaders = [];
   for (const table of document.querySelectorAll('table')) {
     const r = table.getBoundingClientRect();
     const st = window.getComputedStyle(table);
@@ -152,9 +153,21 @@ _TABLE_SNAPSHOT_JS = """
       bodyRows = Array.from(table.querySelectorAll('tr')).filter(tr => !tr.querySelector('th'));
     }
     const rows = bodyRows.map(tr => Array.from(tr.querySelectorAll('td')).map(text));
-    if (rows.length || headers.length) return {headers: headers, rows: rows};
+    // Prefer a table that actually has DATA. DataTables (used throughout this
+    // app) splits one logical grid into two <table> elements: a header-only
+    // table for the fixed header, and a second table holding the body rows.
+    // Returning on the first table with *either* headers or rows picked the
+    // header-only one and reported zero rows, which made the whole snapshot
+    // useless on every list page. Remember the first headers we see, keep
+    // looking for rows, and pair them up.
+    if (rows.length) {
+      return {headers: headers.length ? headers : pendingHeaders, rows: rows};
+    }
+    if (headers.length && !pendingHeaders.length) pendingHeaders = headers;
   }
-  return {headers: [], rows: []};
+  // No table had body rows — hand back any headers we found, so the caller can
+  // still see the shape of the page.
+  return {headers: pendingHeaders, rows: []};
 }
 """
 
