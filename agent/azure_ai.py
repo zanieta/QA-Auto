@@ -387,7 +387,14 @@ def _parse_evaluation(raw: str) -> dict[str, str]:
 
 
 def _loads_loosely(raw: str) -> Any:
-    """Parse JSON, tolerating ```json fences if the model returned them."""
+    """Parse JSON, tolerating ```json fences and trailing extra objects.
+
+    Models occasionally emit the same object twice, back to back:
+    `{"actions":[…]}\\n{"actions":[…]}`. Strict `json.loads` rejects the whole
+    payload ("Extra data: line 2 column 1"), which cost a real run its step
+    (SOUSCLOUD-TC-2915 step 3, 2026-08-17). The first complete object is what
+    the model meant, so decode that and ignore whatever follows.
+    """
     s = raw.strip()
     if s.startswith("```"):
         # strip the first ``` ... ``` block
@@ -397,4 +404,15 @@ def _loads_loosely(raw: str) -> Any:
     try:
         return json.loads(s)
     except json.JSONDecodeError as e:
-        raise AzureAIError(f"Model output is not valid JSON: {e}; raw={raw[:200]!r}") from e
+        # Take the first complete JSON value and drop any trailing junk.
+        try:
+            value, _end = json.JSONDecoder().raw_decode(s)
+        except json.JSONDecodeError:
+            raise AzureAIError(
+                f"Model output is not valid JSON: {e}; raw={raw[:200]!r}"
+            ) from e
+        log.warning(
+            "Model returned extra data after the first JSON value; using the "
+            "first and discarding %d trailing characters", len(s) - _end
+        )
+        return value

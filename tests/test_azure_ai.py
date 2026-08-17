@@ -520,3 +520,31 @@ async def test_evaluate_result_omits_guidance_block_when_not_given():
     content = body["messages"][1]["content"]
     text = "\n".join(b["text"] for b in content if b.get("type") == "text")
     assert "TESTER GUIDANCE" not in text
+
+
+def test_loads_loosely_takes_the_first_of_two_repeated_objects():
+    """gpt-5.4-mini emitted its object twice in a live run and strict json.loads
+    rejected the whole payload, blocking the step. The first value is what the
+    model meant."""
+    from agent.azure_ai import _loads_loosely
+
+    dup = (
+        '{"actions":[{"action":"click","ref":"save_button","value":null}]}\n'
+        '{"actions":[{"action":"click","ref":"save_button","value":null}]}'
+    )
+    assert _loads_loosely(dup) == {
+        "actions": [{"action": "click", "ref": "save_button", "value": None}]
+    }
+
+
+def test_loads_loosely_still_rejects_genuine_garbage():
+    from agent.azure_ai import AzureAIError, _loads_loosely
+
+    with pytest.raises(AzureAIError):
+        _loads_loosely("this is not json at all")
+
+
+def test_loads_loosely_tolerates_prose_after_the_object():
+    from agent.azure_ai import _loads_loosely
+
+    assert _loads_loosely('{"actions":[]}\n\nI hope that helps!') == {"actions": []}
