@@ -1,0 +1,294 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>QA Automation Agent — Problem, Current State, Future State</title>
+<style>
+  :root {
+    --navy: #1B2A6B;
+    --navy-soft: #eef1f9;
+    --ink: #1a1d26;
+    --muted: #5b6172;
+    --line: #d7dbe6;
+    --amber: #9a6700;
+    --amber-soft: #fff8e6;
+    --green: #1a7f4b;
+  }
+  @page { size: Letter; margin: 16mm 15mm 18mm 15mm; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; color: var(--ink);
+    font-family: "Segoe UI", Inter, -apple-system, system-ui, sans-serif;
+    font-size: 10.2pt; line-height: 1.5;
+  }
+  .mono { font-family: "Cascadia Mono", Consolas, monospace; font-size: 0.88em; }
+
+  header.doc {
+    border-bottom: 3px solid var(--navy);
+    padding-bottom: 10px; margin-bottom: 18px;
+    display: flex; align-items: flex-end; justify-content: space-between; gap: 16px;
+  }
+  header.doc h1 { font-size: 19pt; margin: 0 0 3px; color: var(--navy); letter-spacing: -0.2px; }
+  header.doc .sub { color: var(--muted); font-size: 9.5pt; margin: 0; }
+  header.doc .meta { text-align: right; color: var(--muted); font-size: 8.6pt; line-height: 1.45; white-space: nowrap; }
+
+  section { margin-bottom: 20px; page-break-inside: avoid; }
+  .band { display: flex; align-items: center; gap: 10px; margin: 0 0 10px; }
+  .band .num {
+    flex: none; width: 24px; height: 24px; border-radius: 50%;
+    background: var(--navy); color: #fff; font-size: 11pt; font-weight: 700;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .band h2 { font-size: 13pt; margin: 0; color: var(--navy); }
+  .band .tag { margin-left: auto; font-size: 8.2pt; color: var(--muted); text-transform: uppercase; letter-spacing: .09em; }
+
+  p { margin: 0 0 8px; }
+  ul { margin: 0 0 8px; padding-left: 18px; }
+  li { margin-bottom: 4px; }
+  strong { color: var(--navy); }
+
+  .lead {
+    background: var(--navy-soft); border-left: 3px solid var(--navy);
+    padding: 9px 12px; margin: 0 0 12px; font-size: 10.4pt;
+  }
+
+  table { width: 100%; border-collapse: collapse; margin: 8px 0 10px; font-size: 9.4pt; }
+  th, td { text-align: left; padding: 5px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { background: var(--navy-soft); color: var(--navy); font-size: 8.6pt; text-transform: uppercase; letter-spacing: .05em; }
+  td.n { white-space: nowrap; font-family: "Cascadia Mono", Consolas, monospace; }
+
+  .flow { display: flex; align-items: stretch; margin: 10px 0 12px; }
+  .flow .step {
+    flex: 1; border: 1px solid var(--line); border-right: none;
+    padding: 7px 8px; font-size: 8.7pt; background: #fff;
+  }
+  .flow .step:last-child { border-right: 1px solid var(--line); }
+  .flow .step b { display: block; color: var(--navy); font-size: 8.4pt; text-transform: uppercase; letter-spacing: .04em; margin-bottom: 2px; }
+  .flow .step span { color: var(--muted); }
+
+  .cols { display: flex; gap: 14px; }
+  .cols > div { flex: 1; }
+
+  .note {
+    background: var(--amber-soft); border-left: 3px solid var(--amber);
+    padding: 8px 11px; font-size: 9.3pt; margin: 8px 0 10px;
+  }
+  .note b { color: var(--amber); }
+
+  .ok { color: var(--green); font-weight: 600; }
+  .pending { color: var(--amber); font-weight: 600; }
+
+  footer.doc {
+    margin-top: 6px; padding-top: 8px; border-top: 1px solid var(--line);
+    color: var(--muted); font-size: 8.2pt;
+  }
+  h3 { font-size: 10pt; margin: 12px 0 5px; color: var(--navy); }
+</style>
+</head>
+<body>
+
+<header class="doc">
+  <div>
+    <h1>QA Automation Agent</h1>
+    <p class="sub">Sous Chef Cloud &mdash; problem statement, current state, and future state</p>
+  </div>
+  <div class="meta">
+    Duke Manufacturing<br>
+    Prepared by Ron Joseph Santos<br>
+    18 August 2026
+  </div>
+</header>
+
+<section>
+  <div class="band"><div class="num">1</div><h2>Problem Statement</h2><div class="tag">Why this exists</div></div>
+
+  <p class="lead">
+    Regression testing of Sous Chef Cloud is performed by hand. Every test case requires a person
+    to log in, click through each step, judge the result against the written expected outcome,
+    record a verdict in QMetry, and raise a Jira bug when something fails.
+  </p>
+
+  <p>The scale of that manual work, measured from the live QMetry project:</p>
+
+  <table>
+    <tr><th>Measure</th><th>Value</th><th>Implication</th></tr>
+    <tr><td>Test cases in the project library</td><td class="n">2,534</td><td>The full regression surface, larger than any team can cover by hand in a release window</td></tr>
+    <tr><td>Test runs (cycles) on record</td><td class="n">414</td><td>Each is a repeat pass over overlapping cases &mdash; the same clicks, again</td></tr>
+    <tr><td>Steps per case (observed range)</td><td class="n">5&ndash;26</td><td>Long cases are where attention and consistency fade</td></tr>
+  </table>
+
+  <p>Four specific costs follow from doing this manually:</p>
+  <ul>
+    <li><strong>Throughput is capped by tester-hours.</strong> Coverage per release is decided by how
+      many people are available, not by which cases carry the most risk.</li>
+    <li><strong>Verdicts vary by person.</strong> Two testers reading the same expected result can
+      record different outcomes, and neither leaves evidence of what they saw.</li>
+    <li><strong>Result entry is manual transcription.</strong> Verdicts are retyped into QMetry and
+      bugs retyped into Jira &mdash; effort that produces no testing value and can be mistyped.</li>
+    <li><strong>Repetition is the least rewarding work.</strong> Skilled QA time goes to
+      re-executing known paths instead of exploratory testing, where people outperform automation.</li>
+  </ul>
+
+  <div class="note">
+    <b>One figure to supply:</b> the average tester-hours for one full manual regression pass is the
+    single number this document cannot derive from the system. It is held by the QA team, not by
+    QMetry, and it is what converts everything below into a cost saving. It is left blank
+    deliberately rather than estimated.
+  </div>
+</section>
+
+<section>
+  <div class="band"><div class="num">2</div><h2>Current State</h2><div class="tag">Built and running today</div></div>
+
+  <p class="lead">
+    An agent reads test cases from QMetry, translates each plain-English step into a real browser
+    action, executes it against Sous Chef Cloud, judges the resulting screenshot with a vision
+    model, and writes the verdict back &mdash; with a live console a tester watches while it runs.
+  </p>
+
+  <div class="flow">
+    <div class="step"><b>1 &middot; Read</b><span>Test cases + steps from the QMetry REST API</span></div>
+    <div class="step"><b>2 &middot; Translate</b><span>English step &rarr; browser action (AI)</span></div>
+    <div class="step"><b>3 &middot; Execute</b><span>Playwright drives Chromium</span></div>
+    <div class="step"><b>4 &middot; Judge</b><span>Screenshot vs expected (AI vision)</span></div>
+    <div class="step"><b>5 &middot; Report</b><span>QMetry result, Jira bug, HTML report</span></div>
+  </div>
+
+  <h3>What is proven, and how</h3>
+  <table>
+    <tr><th>Capability</th><th>Status</th><th>Evidence</th></tr>
+    <tr>
+      <td>End-to-end run against the live application</td>
+      <td class="ok">Working</td>
+      <td>3 of 3 cases passed in ~82 seconds against test.souscheftech.com, with a report generated</td>
+    </tr>
+    <tr>
+      <td>QMetry integration (read cases, write results)</td>
+      <td class="ok">Working</td>
+      <td>Live against cycle <span class="mono">SOUSCLOUD-TR-482</span>; case-level result push confirmed</td>
+    </tr>
+    <tr>
+      <td>Console: Manual tab plus live execution tape</td>
+      <td class="ok">Working</td>
+      <td>Browses all 414 runs and 2,534 cases with server-side search; steps load per opened case</td>
+    </tr>
+    <tr>
+      <td>Automated regression of the agent itself</td>
+      <td class="ok">374 tests green</td>
+      <td>Mocked HTTP and browser, so the suite runs offline in seconds</td>
+    </tr>
+    <tr>
+      <td>Per-case server targeting (Test / Production / any URL)</td>
+      <td class="ok">Shipped 18 Aug</td>
+      <td>Validated when saved; warns whenever a case points off the test server</td>
+    </tr>
+    <tr>
+      <td>Automatic Jira bug filing</td>
+      <td class="pending">Built, gated off</td>
+      <td><span class="mono">AUTO_CREATE_BUGS=false</span> until a full-plan run has been verified</td>
+    </tr>
+  </table>
+
+  <div class="cols">
+    <div>
+      <h3>Design decisions that matter</h3>
+      <ul>
+        <li><strong>Credentials never reach the model.</strong> Login and logout are executed by the
+          harness; the AI can request them but never sees a password.</li>
+        <li><strong>The model targets real elements,</strong> not guessed CSS &mdash; the page is
+          snapshotted and every action refers to a tagged element on it.</li>
+        <li><strong>Model choices are measured, not assumed.</strong> The evaluator runs
+          <span class="mono">gpt-4.1</span> and the translator <span class="mono">gpt-5.4-mini</span>.
+          A comparison harness scored candidates on verdict stability, and one prompt variant was
+          rejected for a 20% flip rate on identical input.</li>
+        <li><strong>A failing case never stops the run.</strong> Each case is isolated; failures are
+          recorded and the run continues.</li>
+      </ul>
+    </div>
+    <div>
+      <h3>Known limits, stated plainly</h3>
+      <ul>
+        <li><strong>Results post per case, not per step.</strong> QMetry's Open API exposes test
+          steps read-only; per-step writes need its separate Automation API.</li>
+        <li><strong>Bug filing is off by default,</strong> and should stay off until a full plan run
+          has been reviewed by a person.</li>
+        <li><strong>Some steps resist single-screenshot judgement</strong> &mdash; a 20-item
+          checklist across a scrolling panel is the known example.</li>
+        <li><strong>Tester session state is per machine.</strong> Hand marks and notes do not sync
+          between devices.</li>
+        <li><strong>The QMetry API key needs rotation.</strong> It was exposed in working transcripts
+          and remains valid.</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="band"><div class="num">3</div><h2>Future State</h2><div class="tag">Where this goes</div></div>
+
+  <p class="lead">
+    A tester selects a plan, presses Run, and reviews evidence instead of producing it &mdash; with
+    the agent covering the repeatable regression surface while people spend their time on judgement
+    and exploration.
+  </p>
+
+  <table>
+    <tr><th style="width:20%">Horizon</th><th>Objective</th><th style="width:31%">Gate to clear first</th></tr>
+    <tr>
+      <td><strong>Immediate</strong><br><span style="color:var(--muted)">days</span></td>
+      <td>Rotate the QMetry API key; confirm the new per-case server row in daily use</td>
+      <td>Security housekeeping &mdash; no dependency</td>
+    </tr>
+    <tr>
+      <td><strong>Near</strong><br><span style="color:var(--muted)">weeks</span></td>
+      <td>Run a full plan end to end, review every verdict by hand, then enable automatic Jira bug
+        filing</td>
+      <td>A human-reviewed full-plan run. Auto-filing before that risks noise in the bug tracker</td>
+    </tr>
+    <tr>
+      <td><strong>Near</strong><br><span style="color:var(--muted)">weeks</span></td>
+      <td>Harden verdict quality: capture the hard evaluation cases plus a should-obviously-fail
+        control, then re-score the evaluator</td>
+      <td>The current model decision rests on one easy captured step &mdash; a known coverage gap</td>
+    </tr>
+    <tr>
+      <td><strong>Medium</strong><br><span style="color:var(--muted)">a quarter</span></td>
+      <td>Per-step results in QMetry, so a failure points at the step rather than the whole case</td>
+      <td>Access to QMetry's Automation API (a separate token) &mdash; decision pending</td>
+    </tr>
+    <tr>
+      <td><strong>Medium</strong><br><span style="color:var(--muted)">a quarter</span></td>
+      <td>Scale coverage from a five-case demonstration cycle toward the regression suites that
+        matter most per release</td>
+      <td>Case text must reference the real UI; poorly-specified cases fail for the wrong reason</td>
+    </tr>
+  </table>
+
+  <h3>What success looks like</h3>
+  <ul>
+    <li><strong>Regression passes run unattended</strong> &mdash; overnight or on demand &mdash; with
+      a shareable HTML report carrying a screenshot of every step as evidence.</li>
+    <li><strong>Failures arrive as filed bugs</strong> with steps, screenshots and the model's stated
+      reason, rather than as a tester's recollection.</li>
+    <li><strong>Coverage per release becomes a choice,</strong> not a constraint imposed by available
+      tester-hours.</li>
+    <li><strong>People are pointed at work that needs people:</strong> exploratory testing, new
+      features, and judging the cases the agent flags as uncertain.</li>
+  </ul>
+
+  <div class="note">
+    <b>The honest boundary:</b> this agent verifies what a test case describes. It does not decide
+    what to test, write good test cases, or replace exploratory testing &mdash; and a case whose
+    steps do not match the real UI will fail regardless of how good the agent is. Its value scales
+    with the quality of the test cases it is given.
+  </div>
+</section>
+
+<footer class="doc">
+  Figures verified against the live QMetry project and a green test suite on 18 August 2026.
+  Repository <span class="mono">github.com/zanieta/QA-Auto</span>.
+  The one deliberately blank figure &mdash; manual tester-hours per regression pass &mdash; is noted in section 1.
+</footer>
+
+</body>
+</html>
