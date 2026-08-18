@@ -53,10 +53,18 @@ export default function App() {
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   const [defaultCycle, setDefaultCycle] = useState(null)
+  // environments + default_url feed the per-case Server row on the Manual tab
+  // (see TargetUrlRow.jsx) — same /config call, no extra request.
+  const [environments, setEnvironments] = useState([])
+  const [defaultUrl, setDefaultUrl] = useState(null)
   useEffect(() => {
     fetch('/config', { cache: 'no-store' })
       .then((r) => (r.ok ? r.json() : null))
-      .then((c) => setDefaultCycle(c?.default_cycle ?? null))
+      .then((c) => {
+        setDefaultCycle(c?.default_cycle ?? null)
+        setEnvironments(c?.environments ?? [])
+        setDefaultUrl(c?.default_url ?? null)
+      })
       .catch(() => {})
   }, [])
 
@@ -298,6 +306,8 @@ export default function App() {
             loading={manualLoading}
             refresh={refreshManual}
             activeId={manualActiveId}
+            environments={environments}
+            defaultUrl={defaultUrl}
           />
         )}
 

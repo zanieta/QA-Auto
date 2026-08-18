@@ -95,7 +95,7 @@ def _credential_recorder(cases: list[dict]) -> tuple[Orchestrator, list]:
         on_update=lambda s: None,
     )
 
-    async def _fake(state, case, dry_run=False, step_indices=None, credentials=None):
+    async def _fake(state, case, dry_run=False, step_indices=None, credentials=None, target_url=None):
         seen.append(credentials)
         state.resolve_case(case["id"], "pass")
 
@@ -1211,6 +1211,121 @@ async def test_per_case_credentials_override_the_run_level_pair():
 @pytest.mark.asyncio
 async def test_no_credentials_means_none_so_login_uses_dotenv():
     orch, seen = _credential_recorder([_bare_case("TC-1")])
+    await orch.run_plan("X")
+    assert seen == [None]
+
+
+# ----- target URL override (per-case only, 2026-08-18) ----------------------
+
+
+@pytest.mark.asyncio
+async def test_run_single_case_sets_browser_base_url(mock_login):
+    """A per-case target URL must land on browser.base_url BEFORE login()
+    awaits — mirrors test_run_single_case_sets_browser_credentials."""
+    cases = [
+        {"id": "A", "name": "Alpha", "steps": [{"action": "x", "expected": "y"}]},
+    ]
+    browser = _fake_browser()
+    browser.base_url = "https://default.example.com"
+    seen: dict = {}
+
+    async def _capture_login(b):
+        seen["base_url_at_login_time"] = b.base_url
+
+    mock_login.side_effect = _capture_login
+
+    orch = Orchestrator(
+        azure=_fake_azure(
+            translate_side_effect=[_ok_actions()],
+            evaluate_side_effect=[{"status": "pass", "reason": "ok"}],
+        ),
+        browser_factory=lambda: browser,
+        case_source=FakeCaseSource({"key": "X", "name": "x"}, cases),
+        on_update=lambda s: None,
+    )
+    state = await orch.run_single_case(
+        "A", "X", target_url="https://test.souscheftech.com/login/"
+    )
+
+    # trailing slash stripped, mirroring the browser_factory's own base_url handling
+    assert browser.base_url == "https://test.souscheftech.com/login"
+    assert seen["base_url_at_login_time"] == "https://test.souscheftech.com/login"
+    assert state.test_cases[0].status == "pass"
+
+
+@pytest.mark.asyncio
+async def test_run_single_case_no_target_url_leaves_factory_default(mock_login):
+    cases = [
+        {"id": "A", "name": "Alpha", "steps": [{"action": "x", "expected": "y"}]},
+    ]
+    browser = _fake_browser()
+    browser.base_url = "https://default.example.com"
+
+    orch = Orchestrator(
+        azure=_fake_azure(
+            translate_side_effect=[_ok_actions()],
+            evaluate_side_effect=[{"status": "pass", "reason": "ok"}],
+        ),
+        browser_factory=lambda: browser,
+        case_source=FakeCaseSource({"key": "X", "name": "x"}, cases),
+        on_update=lambda s: None,
+    )
+    await orch.run_single_case("A", "X")
+    assert browser.base_url == "https://default.example.com"
+
+
+@pytest.mark.asyncio
+async def test_run_single_case_empty_target_url_leaves_factory_default(mock_login):
+    cases = [
+        {"id": "A", "name": "Alpha", "steps": [{"action": "x", "expected": "y"}]},
+    ]
+    browser = _fake_browser()
+    browser.base_url = "https://default.example.com"
+
+    orch = Orchestrator(
+        azure=_fake_azure(
+            translate_side_effect=[_ok_actions()],
+            evaluate_side_effect=[{"status": "pass", "reason": "ok"}],
+        ),
+        browser_factory=lambda: browser,
+        case_source=FakeCaseSource({"key": "X", "name": "x"}, cases),
+        on_update=lambda s: None,
+    )
+    await orch.run_single_case("A", "X", target_url="")
+    assert browser.base_url == "https://default.example.com"
+
+
+def _target_url_recorder(cases: list[dict]) -> tuple[Orchestrator, list]:
+    """Orchestrator whose _execute_case only records the target_url it got."""
+    seen: list[str | None] = []
+    orch = Orchestrator(
+        azure=_fake_azure(),
+        browser_factory=_fake_browser,
+        case_source=FakeCaseSource({"key": "X", "name": "x"}, cases),
+        on_update=lambda s: None,
+    )
+
+    async def _fake(state, case, dry_run=False, step_indices=None, credentials=None, target_url=None):
+        seen.append(target_url)
+        state.resolve_case(case["id"], "pass")
+
+    orch._execute_case = _fake
+    return orch, seen
+
+
+@pytest.mark.asyncio
+async def test_per_case_target_url_applies_to_that_case_only():
+    orch, seen = _target_url_recorder([_bare_case("TC-1"), _bare_case("TC-2")])
+    await orch.run_plan(
+        "X",
+        case_target_urls={"TC-2": "https://prod.example.com"},
+    )
+    assert seen == [None, "https://prod.example.com"]
+
+
+@pytest.mark.asyncio
+async def test_no_case_target_urls_means_none_for_every_case():
+    orch, seen = _target_url_recorder([_bare_case("TC-1")])
     await orch.run_plan("X")
     assert seen == [None]
 

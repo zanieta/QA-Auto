@@ -2,7 +2,9 @@
 
 Separate from RunState (which is the *agent* run contract). Holds, per test
 case in a cycle, a tester's hand-entered mark (pass/fail/blocked + note +
-flagged failing steps) and any per-case agent run that was triggered.
+flagged failing steps), a per-case login override, a per-case target URL
+override (which server the agent runs against), and any per-case agent run
+that was triggered.
 
 Marks are held in memory keyed by plan, and snapshotted to
 `manual_sessions/<plan>.json` so a server restart does not lose them. The cases
@@ -45,6 +47,8 @@ class ManualMark:
     pushed_to_qmetry: bool = False
     login_username: str = ""  # per-case login account; "" = use the .env default
     login_password: str = ""  # persisted to disk only — never serialized to the browser
+    target_url: str = ""  # per-case server override; "" = use APP_BASE_URL. NOT a
+    # secret — unlike login_password, this ships in every /manual payload.
 
     def to_dict(self, include_secrets: bool = False) -> dict:
         d = {
@@ -59,6 +63,7 @@ class ManualMark:
             "pushed_to_qmetry": self.pushed_to_qmetry,
             "login_username": self.login_username,
             "has_password": bool(self.login_password),
+            "target_url": self.target_url,
         }
         if include_secrets:
             d["login_password"] = self.login_password
@@ -79,6 +84,7 @@ class ManualMark:
             pushed_to_qmetry=d.get("pushed_to_qmetry", False),
             login_username=d.get("login_username", ""),
             login_password=d.get("login_password", ""),
+            target_url=d.get("target_url", ""),
         )
 
 
@@ -374,6 +380,15 @@ class ManualStore:
             case.mark.login_username = username
             if password:
                 case.mark.login_password = password
+        self._persist(plan_key, case_id, case.mark)
+        return case
+
+    def set_target_url(self, plan_key: str, case_id: str, url: str) -> ManualCase:
+        """Per-case server override for the agent. An empty string clears back
+        to the .env `APP_BASE_URL` default. Unlike `set_credentials`, there is
+        no secret to preserve — the caller always gets exactly what it sent."""
+        case = self._require_case(plan_key, case_id)
+        case.mark.target_url = url
         self._persist(plan_key, case_id, case.mark)
         return case
 

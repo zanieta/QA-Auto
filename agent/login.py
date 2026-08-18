@@ -40,7 +40,10 @@ async def login(browser: BrowserSession) -> None:
     Raises BrowserError if credentials are missing, the form rejects them, or
     navigation times out.
     """
-    base_url = os.environ.get("APP_BASE_URL", "").rstrip("/")
+    # browser.base_url, not os.environ["APP_BASE_URL"] directly: BrowserSession
+    # already defaults it from APP_BASE_URL, so behaviour is unchanged when no
+    # override is set, but a per-case target URL (Manual tab) is honored too.
+    base_url = (browser.base_url or "").rstrip("/")
     override = getattr(browser, "credentials", None)
     if override:
         username, password = override

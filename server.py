@@ -21,6 +21,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import Literal
+from urllib.parse import urlparse
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Request
@@ -103,6 +104,10 @@ class RunAgentBody(BaseModel):
 class CredentialsBody(BaseModel):
     username: str = ""
     password: str = ""
+
+
+class TargetUrlBody(BaseModel):
+    url: str = ""
 
 
 class PushBody(BaseModel):
@@ -222,6 +227,7 @@ async def _run_in_background(run_id: str, plan_key: str, state: RunState) -> Non
             plan_key,
             credentials=RUN_CREDENTIALS.get(run_id),
             case_credentials=_manual_case_credentials(plan_key),
+            case_target_urls=_manual_case_target_urls(plan_key),
         )
         RUNS[run_id] = final
     except Exception:
@@ -250,6 +256,23 @@ def _manual_case_credentials(plan_key: str) -> dict[str, tuple[str, str]]:
     return out
 
 
+def _manual_case_target_urls(plan_key: str) -> dict[str, str]:
+    """Per-case server overrides saved in the Manual tab.
+
+    Kept here rather than in the orchestrator so agent/ never imports the
+    manual session store. Skips empties — an empty target_url means "use
+    the .env default", so it has no place in the override map.
+    """
+    session = MANUAL.get(plan_key)
+    if session is None:
+        return {}
+    out: dict[str, str] = {}
+    for case in session.cases:
+        if case.mark.target_url:
+            out[case.id] = case.mark.target_url
+    return out
+
+
 async def _run_agent_case(
     run_id: str,
     plan: str,
@@ -263,18 +286,21 @@ async def _run_agent_case(
     in ManualStore.set_agent preserves the selection recorded at run start.
     """
     creds = None
+    target_url = None
     session = MANUAL.get(plan)
     if session is not None:
         try:
             mark = session.find_case(case_id).mark
             if mark.login_username and mark.login_password:
                 creds = (mark.login_username, mark.login_password)
+            target_url = mark.target_url or None
         except KeyError:
             pass
     try:
         orch = _build_orchestrator(_make_on_update(run_id))
         final = await orch.run_single_case(
-            case_id, plan_key=plan, step_indices=step_indices, credentials=creds
+            case_id, plan_key=plan, step_indices=step_indices, credentials=creds,
+            target_url=target_url,
         )
         RUNS[run_id] = final
         case = next((c for c in final.test_cases if c.id == case_id), None)
@@ -311,10 +337,40 @@ async def _run_agent_case(
 # ---------------------------------------------------------------- endpoints
 
 
+def _parse_app_environments() -> list[dict]:
+    """Parse `APP_ENVIRONMENTS` ("Name=url,Name=url") into [{"name", "url"}].
+
+    A malformed entry (no "=", or an empty name/url) is skipped with a
+    logged warning rather than crashing /config; unset or all-malformed
+    yields [].
+    """
+    raw = os.environ.get("APP_ENVIRONMENTS", "")
+    out: list[dict] = []
+    for entry in raw.split(","):
+        entry = entry.strip()
+        if not entry:
+            continue
+        if "=" not in entry:
+            log.warning("Skipping malformed APP_ENVIRONMENTS entry: %r", entry)
+            continue
+        name, _, url = entry.partition("=")
+        name, url = name.strip(), url.strip()
+        if not name or not url:
+            log.warning("Skipping malformed APP_ENVIRONMENTS entry: %r", entry)
+            continue
+        out.append({"name": name, "url": url})
+    return out
+
+
 @app.get("/config")
 async def get_config() -> dict:
-    """Non-secret frontend bootstrap: which cycle to open by default."""
-    return {"default_cycle": os.environ.get("QMETRY_DEFAULT_CYCLE") or None}
+    """Non-secret frontend bootstrap: which cycle to open by default, and the
+    known-server list for the Manual tab's per-case target URL picker."""
+    return {
+        "default_cycle": os.environ.get("QMETRY_DEFAULT_CYCLE") or None,
+        "environments": _parse_app_environments(),
+        "default_url": os.environ.get("APP_BASE_URL") or None,
+    }
 
 
 @app.get("/cycles")
@@ -643,6 +699,27 @@ async def set_case_credentials(plan: str, case_id: str, body: CredentialsBody) -
     payloads contain the username only — never the password."""
     try:
         case = MANUAL.set_credentials(plan, case_id, body.username, body.password)
+    except KeyError as e:
+        raise HTTPException(404, str(e))
+    return case.to_dict()
+
+
+@app.post("/manual/{plan}/cases/{case_id}/target-url")
+async def set_case_target_url(plan: str, case_id: str, body: TargetUrlBody) -> dict:
+    """Per-case server override for the agent. Not a secret, unlike
+    /credentials — the response and every /manual payload carry the URL as-is.
+    "" clears back to the .env APP_BASE_URL default; anything else must parse
+    as an http(s) URL with a host, or this 422s so a typo fails at save time
+    instead of surfacing as a mysterious BLOCKED login mid-run."""
+    url = body.url.strip()
+    if url:
+        parsed = urlparse(url)
+        if parsed.scheme not in ("http", "https") or not parsed.netloc:
+            raise HTTPException(
+                422, f"Invalid target URL {body.url!r}: must be an http(s) URL with a host"
+            )
+    try:
+        case = MANUAL.set_target_url(plan, case_id, url)
     except KeyError as e:
         raise HTTPException(404, str(e))
     return case.to_dict()

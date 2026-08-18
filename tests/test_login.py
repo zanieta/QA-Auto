@@ -95,6 +95,64 @@ async def test_login_shows_inline_error(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_login_uses_browser_base_url_override(monkeypatch):
+    """A per-case target URL (browser.base_url) is what login() navigates to,
+    even though APP_BASE_URL in .env points elsewhere."""
+    monkeypatch.setenv("APP_BASE_URL", "https://default.example.com/login")
+    monkeypatch.setenv("APP_USERNAME", "user@example.com")
+    monkeypatch.setenv("APP_PASSWORD", "secret")
+
+    session, page = _session(base_url="https://test.souscheftech.com/login")
+    await login(session)
+
+    page.goto.assert_awaited_once_with(
+        "https://test.souscheftech.com/login", wait_until="commit", timeout=60_000
+    )
+
+
+@pytest.mark.asyncio
+async def test_login_no_override_uses_env_default_base_url(monkeypatch):
+    """No override: BrowserSession already defaulted base_url from
+    APP_BASE_URL, so behaviour is unchanged."""
+    monkeypatch.setenv("APP_BASE_URL", "https://default.example.com/login")
+    monkeypatch.setenv("APP_USERNAME", "user@example.com")
+    monkeypatch.setenv("APP_PASSWORD", "secret")
+
+    session = BrowserSession(headless=True)  # base_url defaults from APP_BASE_URL
+    page = MagicMock()
+    page.goto = AsyncMock()
+    page.fill = AsyncMock()
+    page.click = AsyncMock()
+    page.url = "https://default.example.com/login"
+    page.wait_for_selector = AsyncMock()
+    page.wait_for_url = AsyncMock()
+    loc = MagicMock()
+    loc.count = AsyncMock(return_value=0)
+    page.locator = MagicMock(return_value=loc)
+    session._page = page
+
+    await login(session)
+    page.goto.assert_awaited_once_with(
+        "https://default.example.com/login", wait_until="commit", timeout=60_000
+    )
+
+
+@pytest.mark.asyncio
+async def test_login_error_message_names_overridden_url(monkeypatch):
+    """The 'email field never appeared' error must name the URL login()
+    actually tried — the overridden one, not APP_BASE_URL."""
+    monkeypatch.setenv("APP_BASE_URL", "https://default.example.com/login")
+    monkeypatch.setenv("APP_USERNAME", "user@example.com")
+    monkeypatch.setenv("APP_PASSWORD", "secret")
+
+    session, page = _session(base_url="https://test.souscheftech.com/login")
+    page.wait_for_selector = AsyncMock(side_effect=Exception("timeout"))
+
+    with pytest.raises(BrowserError, match="test.souscheftech.com"):
+        await login(session)
+
+
+@pytest.mark.asyncio
 async def test_login_timeout_no_error_element(monkeypatch):
     monkeypatch.setenv("APP_BASE_URL", "https://test.souscheftech.com/login")
     monkeypatch.setenv("APP_USERNAME", "u")

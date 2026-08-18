@@ -134,6 +134,12 @@ JIRA_BUG_ISSUE_TYPE=Bug
 APP_BASE_URL=https://<sous-chef-cloud-uat-url>
 APP_USERNAME=<test-user-email>
 APP_PASSWORD=<test-user-password>
+APP_ENVIRONMENTS=                # optional; "Name=url" pairs, comma separated
+                                  # (e.g. Test=https://test.souscheftech.com/login,
+                                  # Production=https://souscheftech.com/login).
+                                  # Surfaced via GET /config as environments +
+                                  # default_url for the Manual tab's per-case
+                                  # target-URL picker. Not a secret.
 
 # Server
 SERVER_HOST=127.0.0.1
@@ -223,8 +229,17 @@ npm run build      # production build → frontend/dist
 ```
 
 For local dev: run `python server.py` in one terminal and `npm run dev` in another.
-The Vite dev server proxies `/runs/*` to the backend so there are no CORS issues in
-dev. In production, `server.py` serves the built `frontend/dist` as static files.
+The Vite dev server proxies `/runs`, `/manual`, `/config`, `/reports`, `/cycles`
+and `/testcases` to the backend so there are no CORS issues in
+dev. **Every prefix `server.py` answers must be listed in
+`frontend/vite.config.js`.** An unlisted prefix does not 404 — it falls through
+to Vite's SPA fallback and returns `index.html`, so the caller's `res.json()`
+fails with `Unexpected token '<', "<!doctype "...`. This bites in dev ONLY:
+`/cycles` and `/testcases` shipped with the TR/TC rail browser, were never added
+to the proxy, and the rail read "0 of 0" in dev while working fine in production
+(fixed 2026-08-18).
+
+In production, `server.py` serves the built `frontend/dist` as static files.
 
 ---
 
@@ -240,7 +255,10 @@ serializes current state on each request.
 ### agent/manual_state.py
 The Manual-tab contract. `ManualStore` holds per-case hand marks
 (pass/fail/blocked + note + flagged failing steps + any per-case agent run),
-keyed by plan and snapshotted to `manual_sessions/<plan>.json`. `ManualSession`
+a per-case login override, and a per-case target-URL override (`target_url` —
+"" means use `APP_BASE_URL`; not a secret, unlike `login_password`, so it
+ships in every `/manual` payload), keyed by plan and snapshotted to
+`manual_sessions/<plan>.json`. `ManualSession`
 serializes to the shape in FRONTEND.md's "Manual session state". `compose_comment`
 builds the QMetry comment from the note + flagged steps. The QMetry execution id is
 held server-side only.
@@ -483,6 +501,10 @@ FastAPI app. Endpoints (exactly what the frontend calls — see FRONTEND.md):
   `TC:<case key>` for a library case).
 - `GET /manual/{plan}/cases/{id}/steps` → hydrate one case's steps on demand.
 - `POST /manual/{plan}/cases/{id}/mark` → record a hand mark.
+- `POST /manual/{plan}/cases/{id}/credentials` → per-case login override.
+- `POST /manual/{plan}/cases/{id}/target-url` `{"url": "https://…"}` → per-case
+  server override for the agent; `""` clears back to `APP_BASE_URL`. 422 on a
+  malformed URL (not `http`/`https`, or no host), 404 on an unknown case.
 - `POST /manual/{plan}/cases/{id}/run-agent` → run one case with the agent.
 - `POST /manual/{plan}/push-qmetry` → gated push of manual results to QMetry.
 - Serves `frontend/dist` as static files in production.

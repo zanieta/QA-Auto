@@ -185,6 +185,7 @@ class Orchestrator:
         plan_key: str,
         credentials: tuple[str, str] | None = None,
         case_credentials: dict[str, tuple[str, str]] | None = None,
+        case_target_urls: dict[str, str] | None = None,
     ) -> RunState:
         """Run an entire plan end-to-end. Returns the final RunState.
 
@@ -194,6 +195,12 @@ class Orchestrator:
         line — they reach BrowserSession.credentials and nowhere else. The
         per-case map is built by the caller (server.py reads ManualStore) so
         this module stays independent of the manual session store.
+
+        `case_target_urls` is a per-case server override (Manual-tab target
+        URL) — case-level only, no run-level equivalent. A case id present in
+        it sets `BrowserSession.base_url` for that case; absent means the
+        browser factory's default (APP_BASE_URL). Not a secret: unlike
+        credentials, it may be logged.
         """
         plan = await self.case_source.get_plan(plan_key)
         state = new_run_state(plan["key"], plan["name"])
@@ -224,6 +231,7 @@ class Orchestrator:
         self.on_update(state)
 
         per_case = case_credentials or {}
+        per_case_url = case_target_urls or {}
         for case in cases:
             try:
                 # `or credentials`, not membership: the only producer
@@ -233,7 +241,9 @@ class Orchestrator:
                 # falls through to the run-level pair, then to the .env
                 # account — the same rule the docstring above describes.
                 await self._execute_case(
-                    state, case, credentials=per_case.get(case["id"]) or credentials
+                    state, case,
+                    credentials=per_case.get(case["id"]) or credentials,
+                    target_url=per_case_url.get(case["id"]),
                 )
             except Exception:
                 log.exception("Case %s crashed; marking blocked", case.get("id"))
@@ -251,6 +261,7 @@ class Orchestrator:
         dry_run: bool = False,
         step_indices: list[int] | None = None,
         credentials: tuple[str, str] | None = None,
+        target_url: str | None = None,
     ) -> RunState:
         """Run one case (used by `main.py --testcase` and the Manual tab).
 
@@ -262,6 +273,9 @@ class Orchestrator:
         case only (Manual-tab per-case credentials). Never logged, never put
         in any prompt/context string or run_state — it only reaches
         `BrowserSession.credentials`, which `login()` reads directly.
+
+        `target_url`, if given, overrides the .env server for this case only
+        (Manual-tab per-case target URL). Not a secret — it may be logged.
         """
         # Steps-less list, then hydrate just this case: fetching every case's
         # steps to run one of them costs a QMetry call per case in the cycle.
@@ -286,7 +300,7 @@ class Orchestrator:
         try:
             await self._execute_case(
                 state, match, dry_run=dry_run, step_indices=step_indices,
-                credentials=credentials,
+                credentials=credentials, target_url=target_url,
             )
         finally:
             state.finish()
@@ -302,6 +316,7 @@ class Orchestrator:
         dry_run: bool = False,
         step_indices: list[int] | None = None,
         credentials: tuple[str, str] | None = None,
+        target_url: str | None = None,
     ) -> None:
         case_id = case["id"]
         state.start_case(case_id)
@@ -323,6 +338,9 @@ class Orchestrator:
         if not dry_run:
             browser = self.browser_factory()
             browser.credentials = credentials
+            if target_url:
+                browser.base_url = target_url.rstrip("/")
+                log.info("Case %s: server override %s", case_id, browser.base_url)
             try:
                 await browser.open_session()
                 if self.launch_delay_s > 0 and not getattr(browser, "headless", True):

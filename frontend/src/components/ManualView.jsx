@@ -8,7 +8,17 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import ManualCase from './ManualCase.jsx'
 import { fetchCaseSteps, pushToQmetry } from '../hooks/useManualState.js'
 
-export default function ManualView({ plan, planLabel, state, error, loading, refresh, activeId }) {
+export default function ManualView({
+  plan,
+  planLabel,
+  state,
+  error,
+  loading,
+  refresh,
+  activeId,
+  environments = [],
+  defaultUrl,
+}) {
   const [pushing, setPushing] = useState(false)
   const [pushMsg, setPushMsg] = useState(null)
   const [pushFailed, setPushFailed] = useState(false)
@@ -102,7 +112,13 @@ export default function ManualView({ plan, planLabel, state, error, loading, ref
           Loading steps for <span className="mono">{activeCase.id}</span>…
         </p>
       ) : activeCase ? (
-        <ManualCase plan={plan} testCase={activeCase} onChanged={refresh} />
+        <ManualCase
+          plan={plan}
+          testCase={activeCase}
+          onChanged={refresh}
+          environments={environments}
+          defaultUrl={defaultUrl}
+        />
       ) : (
         <p className="manual-empty">No cases in this cycle yet.</p>
       )}

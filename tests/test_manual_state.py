@@ -337,6 +337,32 @@ def test_set_credentials_clear_and_keep_semantics(store):
     assert (m.login_username, m.login_password) == ("", "")
 
 
+def test_target_url_set_clear_and_persist_roundtrip(store):
+    from agent.manual_state import ManualMark
+
+    store.build("TP-45", "Smoke", RAW_CASES, qmetry_configured=True)
+    store.set_target_url("TP-45", "IRHS-R-01", "https://test.souscheftech.com/login")
+    d = store.get("TP-45").find_case("IRHS-R-01").mark.to_dict()
+    assert d["target_url"] == "https://test.souscheftech.com/login"
+
+    persisted = store.get("TP-45").find_case("IRHS-R-01").mark.to_dict(include_secrets=True)
+    again = ManualMark.from_dict(persisted)
+    assert again.target_url == "https://test.souscheftech.com/login"
+
+    # empty clears back to the .env default
+    store.set_target_url("TP-45", "IRHS-R-01", "")
+    m = store.get("TP-45").find_case("IRHS-R-01").mark
+    assert m.target_url == ""
+
+
+def test_target_url_missing_key_loads_as_empty_string():
+    from agent.manual_state import ManualMark
+
+    m = ManualMark.from_dict({"status": "unmarked"})
+    assert m.target_url == ""
+    assert m.to_dict()["target_url"] == ""
+
+
 # ----- per-step marks (task 1, spec 2026-07-09) -----------------------------
 
 

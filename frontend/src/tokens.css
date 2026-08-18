@@ -1118,6 +1118,34 @@ button:focus-visible,
   margin: 4px 0 0;
 }
 
+/* --- per-case Server (target URL) row --------------------------------- */
+.manual-targeturl select {
+  font: inherit;
+  font-size: 13px;
+  padding: 6px 8px;
+  border: 1px solid rgba(27, 42, 107, 0.18);
+  border-radius: var(--radius-sm);
+  background: #fff;
+}
+
+.manual-targeturl input {
+  min-width: 260px;
+}
+
+.manual-targeturl-warn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--amber);
+  background: var(--amber-soft);
+  border: 1px solid var(--amber);
+  border-radius: var(--radius-sm);
+  padding: 6px 10px;
+  margin: 6px 0 0;
+}
+
 @media (max-width: 640px) {
   .view-tabs { padding: 8px 12px 0; }
 }

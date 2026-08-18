@@ -117,6 +117,22 @@ export async function saveCaseCredentials(planKey, caseId, username, password) {
   return res.json()
 }
 
+export async function saveCaseTargetUrl(planKey, caseId, url) {
+  const res = await fetch(
+    `/manual/${encodeURIComponent(planKey)}/cases/${encodeURIComponent(caseId)}/target-url`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url }),
+    },
+  )
+  if (!res.ok) {
+    const detail = await res.json().catch(() => ({}))
+    throw new Error(detail.detail || `Server save failed: ${res.status}`)
+  }
+  return res.json()
+}
+
 export async function cancelRun(runId) {
   const res = await fetch(`/runs/${encodeURIComponent(runId)}/cancel`, { method: 'POST' })
   if (!res.ok) {
