@@ -691,80 +691,63 @@ def test_credentials_endpoint_unknown_case_404(client, tmp_path, monkeypatch):
     assert r.status_code == 404
 
 
-# ----- POST /manual/{plan}/cases/{id}/target-url ---------------------------
+# ----- GLOBAL target URL: GET /config + POST /settings/target-url ----------
 
 
-def test_target_url_endpoint_sets_and_returns(client, tmp_path, monkeypatch):
-    monkeypatch.setattr("agent.manual_state.MANUAL_DIR", tmp_path)
-    server_mod.MANUAL = server_mod.ManualStore()
-    cases = [{"id": "A", "name": "Case A", "steps": [{"action": "go", "expected": "ok"}]}]
-    monkeypatch.setattr(server_mod, "_make_case_source", lambda: _fake_case_source(cases))
-    monkeypatch.setattr(server_mod, "_qmetry_configured", lambda: False)
-    client.get("/manual/TP-45")  # build the session first
+def test_settings_target_url_endpoint_sets_and_config_reflects_it(client, tmp_path, monkeypatch):
+    monkeypatch.setattr(server_mod, "SETTINGS", server_mod.SettingsStore(tmp_path / "settings.json"))
 
     r = client.post(
-        "/manual/TP-45/cases/A/target-url",
-        json={"url": "https://test.souscheftech.com/login"},
+        "/settings/target-url", json={"url": "https://test.souscheftech.com/login"}
     )
     assert r.status_code == 200
-    body = r.json()
-    assert body["manual"]["target_url"] == "https://test.souscheftech.com/login"
+    assert r.json()["target_url"] == "https://test.souscheftech.com/login"
 
-    # GET /manual/TP-45 reflects it too — it's not a secret
-    r2 = client.get("/manual/TP-45")
-    case = next(c for c in r2.json()["cases"] if c["id"] == "A")
-    assert case["manual"]["target_url"] == "https://test.souscheftech.com/login"
+    r2 = client.get("/config")
+    assert r2.json()["target_url"] == "https://test.souscheftech.com/login"
 
     # empty clears back to the default
-    r3 = client.post("/manual/TP-45/cases/A/target-url", json={"url": ""})
+    r3 = client.post("/settings/target-url", json={"url": ""})
     assert r3.status_code == 200
-    assert r3.json()["manual"]["target_url"] == ""
+    assert r3.json()["target_url"] == ""
+    assert client.get("/config").json()["target_url"] == ""
 
 
-def test_target_url_endpoint_rejects_malformed_url(client, tmp_path, monkeypatch):
-    monkeypatch.setattr("agent.manual_state.MANUAL_DIR", tmp_path)
-    server_mod.MANUAL = server_mod.ManualStore()
-    cases = [{"id": "A", "name": "Case A", "steps": []}]
-    monkeypatch.setattr(server_mod, "_make_case_source", lambda: _fake_case_source(cases))
-    monkeypatch.setattr(server_mod, "_qmetry_configured", lambda: False)
-    client.get("/manual/TP-45")
+def test_settings_target_url_endpoint_rejects_malformed_url(client, tmp_path, monkeypatch):
+    monkeypatch.setattr(server_mod, "SETTINGS", server_mod.SettingsStore(tmp_path / "settings.json"))
 
     for bad in ["not-a-url", "ftp://example.com", "http://", "//example.com"]:
-        r = client.post("/manual/TP-45/cases/A/target-url", json={"url": bad})
+        r = client.post("/settings/target-url", json={"url": bad})
         assert r.status_code == 422, f"{bad!r} should have been rejected"
 
 
-def test_target_url_endpoint_unknown_case_404(client, tmp_path, monkeypatch):
-    monkeypatch.setattr("agent.manual_state.MANUAL_DIR", tmp_path)
-    server_mod.MANUAL = server_mod.ManualStore()
-    cases = [{"id": "A", "name": "Case A", "steps": []}]
-    monkeypatch.setattr(server_mod, "_make_case_source", lambda: _fake_case_source(cases))
-    monkeypatch.setattr(server_mod, "_qmetry_configured", lambda: False)
-    client.get("/manual/TP-45")
+def test_settings_target_url_persists_across_a_fresh_store_instance(tmp_path):
+    from agent.settings import SettingsStore
 
-    r = client.post(
-        "/manual/TP-45/cases/NOPE/target-url",
-        json={"url": "https://test.souscheftech.com/login"},
-    )
-    assert r.status_code == 404
+    path = tmp_path / "settings.json"
+    store = SettingsStore(path)
+    store.set("target_url", "https://test.souscheftech.com/login")
+
+    fresh = SettingsStore(path)
+    assert fresh.get("target_url") == "https://test.souscheftech.com/login"
 
 
-def test_run_agent_case_passes_target_url(client, tmp_path, monkeypatch):
-    """_run_agent_case forwards the case's saved target_url to the orchestrator."""
+def test_run_agent_case_passes_global_target_url(client, tmp_path, monkeypatch):
+    """_run_agent_case forwards the GLOBAL target_url setting to the orchestrator."""
     import asyncio
 
     from agent.run_state import Step, TestCase, new_run_state
 
     monkeypatch.setattr("agent.manual_state.MANUAL_DIR", tmp_path)
     server_mod.MANUAL = server_mod.ManualStore()
+    monkeypatch.setattr(server_mod, "SETTINGS", server_mod.SettingsStore(tmp_path / "settings.json"))
     cases = [{"id": "A", "name": "Case A", "steps": [{"action": "do the thing", "expected": "e"}]}]
     monkeypatch.setattr(server_mod, "_make_case_source", lambda: _fake_case_source(cases))
     monkeypatch.setattr(server_mod, "_qmetry_configured", lambda: False)
     client.get("/manual/TP-45")
 
     client.post(
-        "/manual/TP-45/cases/A/target-url",
-        json={"url": "https://test.souscheftech.com/login"},
+        "/settings/target-url", json={"url": "https://test.souscheftech.com/login"}
     )
 
     final = new_run_state("TP-45", "TP-45")
@@ -788,7 +771,7 @@ def test_run_agent_case_passes_target_url(client, tmp_path, monkeypatch):
     assert captured["target_url"] == "https://test.souscheftech.com/login"
 
     # clearing it means no target_url override is passed
-    client.post("/manual/TP-45/cases/A/target-url", json={"url": ""})
+    client.post("/settings/target-url", json={"url": ""})
     captured.clear()
     state2 = new_run_state("TP-45", "TP-45")
     asyncio.run(server_mod._run_agent_case(state2.run_id, "TP-45", "A", state2, None))
@@ -1184,6 +1167,13 @@ def test_config_environments_skips_malformed_entry(client, monkeypatch):
     ]
 
 
+def test_config_target_url_empty_when_unset(client, tmp_path, monkeypatch):
+    monkeypatch.setattr(server_mod, "SETTINGS", server_mod.SettingsStore(tmp_path / "settings.json"))
+    r = client.get("/config")
+    assert r.status_code == 200
+    assert r.json()["target_url"] == ""
+
+
 def test_config_default_url_null_when_unset(client, monkeypatch):
     monkeypatch.delenv("APP_BASE_URL", raising=False)
     r = client.get("/config")
@@ -1495,7 +1485,7 @@ def test_run_credentials_cleared_when_run_plan_crashes():
     orch.run_plan raises — otherwise a crashed run leaves a credential resident."""
 
     class CrashingOrch:
-        async def run_plan(self, plan_key, credentials=None, case_credentials=None, case_target_urls=None):
+        async def run_plan(self, plan_key, credentials=None, case_credentials=None, target_url=None):
             raise RuntimeError("boom")
 
     with patch.object(server_mod, "_build_orchestrator", lambda on_update: CrashingOrch()):
@@ -1513,7 +1503,7 @@ async def test_run_in_background_forwards_credentials_then_clears_them(monkeypat
     captured = {}
 
     class FakeOrch:
-        async def run_plan(self, plan_key, credentials=None, case_credentials=None, case_target_urls=None):
+        async def run_plan(self, plan_key, credentials=None, case_credentials=None, target_url=None):
             captured["credentials"] = credentials
             captured["case_credentials"] = case_credentials
             return new_run_state(plan_key)
@@ -1556,50 +1546,44 @@ def test_manual_case_credentials_empty_when_no_session(monkeypatch):
     assert server_mod._manual_case_credentials("P") == {}
 
 
-def test_manual_case_target_urls_collects_only_nonempty(monkeypatch):
-    class _Mark:
-        def __init__(self, url):
-            self.target_url = url
-
-    class _Case:
-        def __init__(self, case_id, mark):
-            self.id = case_id
-            self.mark = mark
-
-    class _Session:
-        cases = [
-            _Case("TC-2", _Mark("https://test.souscheftech.com/login")),
-            _Case("TC-3", _Mark("")),  # nothing saved — skipped
-        ]
-
-    monkeypatch.setattr(server_mod.MANUAL, "get", lambda plan: _Session())
-    assert server_mod._manual_case_target_urls("P") == {
-        "TC-2": "https://test.souscheftech.com/login"
-    }
-
-
-def test_manual_case_target_urls_empty_when_no_session(monkeypatch):
-    monkeypatch.setattr(server_mod.MANUAL, "get", lambda plan: None)
-    assert server_mod._manual_case_target_urls("P") == {}
-
-
-def test_run_in_background_forwards_case_target_urls(monkeypatch):
+def test_run_in_background_forwards_global_target_url(tmp_path, monkeypatch):
     import asyncio
+
+    monkeypatch.setattr(server_mod, "SETTINGS", server_mod.SettingsStore(tmp_path / "settings.json"))
+    server_mod.SETTINGS.set("target_url", "https://prod.example.com")
 
     captured = {}
 
     class FakeOrch:
-        async def run_plan(self, plan_key, credentials=None, case_credentials=None, case_target_urls=None):
-            captured["case_target_urls"] = case_target_urls
+        async def run_plan(self, plan_key, credentials=None, case_credentials=None, target_url=None):
+            captured["target_url"] = target_url
             return new_run_state(plan_key)
 
     monkeypatch.setattr(server_mod, "_build_orchestrator", lambda on_update: FakeOrch())
     monkeypatch.setattr(server_mod, "_manual_case_credentials", lambda plan: {})
-    monkeypatch.setattr(
-        server_mod, "_manual_case_target_urls", lambda plan: {"TC-2": "https://prod/login"}
-    )
     state = new_run_state("P")
 
     asyncio.run(server_mod._run_in_background(state.run_id, "P", state))
 
-    assert captured["case_target_urls"] == {"TC-2": "https://prod/login"}
+    assert captured["target_url"] == "https://prod.example.com"
+
+
+def test_run_in_background_forwards_none_when_target_url_unset(tmp_path, monkeypatch):
+    import asyncio
+
+    monkeypatch.setattr(server_mod, "SETTINGS", server_mod.SettingsStore(tmp_path / "settings.json"))
+
+    captured = {}
+
+    class FakeOrch:
+        async def run_plan(self, plan_key, credentials=None, case_credentials=None, target_url=None):
+            captured["target_url"] = target_url
+            return new_run_state(plan_key)
+
+    monkeypatch.setattr(server_mod, "_build_orchestrator", lambda on_update: FakeOrch())
+    monkeypatch.setattr(server_mod, "_manual_case_credentials", lambda plan: {})
+    state = new_run_state("P")
+
+    asyncio.run(server_mod._run_in_background(state.run_id, "P", state))
+
+    assert captured["target_url"] is None

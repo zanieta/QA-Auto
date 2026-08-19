@@ -127,6 +127,60 @@ scroll or capped-height list), stage below.
 The rail has **two states**: *browse* (nothing open, or a library test case open)
 and *drilled in* (a test run open). The brand block is present in both.
 
+#### Global Server control (`<ServerPicker>`, `.rail-server`)
+Sits directly below the brand block, ABOVE `<CaseBrowser>` — present in both rail
+states, so it reads top-to-bottom: brand → Server control → BROWSE → search →
+list. This is a **console-wide** setting, not per case: one target URL is shared
+by every test run and every case on both the Manual and Live-run tabs (the rail is
+one shared instance, which is why this is its home rather than a per-case widget).
+
+```
+Server
+[ Default        ▾ ]
+[ https://test.souscheftech.com/login          ]
+[Save]  saved
+Blank uses the default server (https://…).
+⚠ Non-test server — the agent will click Save/Delete against live data.
+```
+
+- Stacked vertically (select, then address bar, then Save button + status
+  message), not side-by-side like the removed per-case row — the rail column is
+  narrow (`--rail-w`, 280px) and a row layout would overflow or wrap badly.
+- The `<select>` lists a leading `Default` option, then `environments` from
+  `GET /config`, then a trailing `New link…`. Every option does something when
+  picked — there are no inert entries.
+- **Any URL is allowed.** The dropdown is a set of shortcuts, not a whitelist:
+  the address bar is always editable, and the backend accepts any `http(s)` URL
+  with a host (a branch deploy, a custom port, `localhost`). `environments`
+  exists only so the two everyday servers are one click away.
+- Picking `Default` clears the box (back to `APP_BASE_URL`); picking a named
+  environment fills the box with its URL; picking `New link…` clears the box
+  and focuses it so the tester is immediately typing.
+- The selection is DERIVED from the current URL on every render rather than
+  held as state, so the dropdown and the box cannot drift apart: `""` → `Default`,
+  an exact URL match → that environment, anything else → `New link…`. Typing an
+  address that matches no environment therefore moves the select to `New link…`
+  on its own.
+- The single exception is `newLinkIntent`, a local boolean set when the tester
+  picks `New link…` and hasn't typed yet: without it the now-empty box would
+  derive back to `Default` and yank the dropdown out from under them.
+- The address bar is DM Mono (`.mono`) — it's machine output, like the other
+  URL/ID fields in this app. The "Server" label and help text are Inter.
+- Help text under the row always names the live default: "Blank uses the default
+  server (`<default_url>`)."
+- **Warning** (`.rail-server-warn`, amber — the same `--amber`/`--amber-soft`
+  token already used for `blocked`, no new color): shown whenever the effective
+  URL (the box's value, or `default_url` if blank) differs from `default_url`.
+  There is no separate "is this production" flag — anything that isn't the
+  normal default gets flagged.
+- Saved via a `Save` button below the address bar — `POST /settings/target-url`;
+  not autosaved on blur. Disabled while any run is in flight (a Live-tab run, or
+  a Manual-tab per-case agent run) since either could be mid-navigation against
+  the target it names.
+- Restyled for the rail's dark navy surface (the removed per-case row sat on a
+  light card): translucent-white inputs/select on navy, white text, using only
+  existing tokens — no new colors introduced.
+
 #### Browse state — `<CaseBrowser>` (`.browser`)
 QMetry holds ~430 test runs and ~2500 test cases. Neither list can be loaded
 whole, so the rail browses one page at a time and search is server-side.
@@ -205,6 +259,13 @@ library case with. Both return empty lists (total 0) in fixture mode.
 **`Load more` must use `next_start`, never `items.length`.** A page can return
 more rows than it yields — the server drops rows it won't show — so counting
 kept rows drifts off QMetry's offset and silently skips records.
+
+#### Global Server control endpoint
+`POST /settings/target-url` body `{ "url": "https://…" }` → saves the
+console-wide target URL (see "Global Server control" above); `""` clears back
+to `default_url`. A malformed URL (bad scheme or empty host) returns `422`
+with a `detail` message shown to the tester instead of being saved. Read back
+via `GET /config`'s `target_url` field.
 
 ### 2. Stage head (`.stage-head`)
 - Active test case ID in a navy-soft pill (mono) + the case name (Inter 16/600).
@@ -430,8 +491,7 @@ local, nothing is written to QMetry." Marking and agent runs work normally.
         "agent_note": "",             // latest agent-run summary (per-step verdicts + findings)
         "pushed_to_qmetry": false,
         "login_username": "",         // per-case agent login; "" = default admin
-        "has_password": false,       // a per-case password is saved server-side (never sent here)
-        "target_url": ""              // per-case server override; "" = use APP_BASE_URL (default_url)
+        "has_password": false        // a per-case password is saved server-side (never sent here)
       }
     }
   ],
@@ -443,12 +503,14 @@ The QMetry execution id used to write results back is server-side only and never
 appears in this payload.
 
 ### Endpoints the Manual tab calls
-- `GET  /config` → `{ "default_cycle": "<idOrKey>" | null, "environments": [{"name": "Test", "url": "https://test.souscheftech.com/login"}], "default_url": "https://test.souscheftech.com/login" }`.
+- `GET  /config` → `{ "default_cycle": "<idOrKey>" | null, "environments": [{"name": "Test", "url": "https://test.souscheftech.com/login"}], "default_url": "https://test.souscheftech.com/login", "target_url": "" }`.
   `default_cycle` is the cycle the console opens when the URL has no
-  `?cycle=` (from `QMETRY_DEFAULT_CYCLE`). `environments` and `default_url`
-  feed the per-case Server row (`<TargetUrlRow>`, below) — `environments` is
-  `[]` when `APP_ENVIRONMENTS` is unset, and the row still offers its
-  free-text address bar in that case.
+  `?cycle=` (from `QMETRY_DEFAULT_CYCLE`). `environments`, `default_url`, and
+  `target_url` feed the rail's GLOBAL Server control (`<ServerPicker>`, in the
+  Rail section above) — `environments` is `[]` when `APP_ENVIRONMENTS` is
+  unset, and the control still offers its free-text address bar in that case.
+  `target_url` is the console-wide current override; `""` means unset (use
+  `default_url`).
 - `GET  /cycles?q=&start=&limit=` and `GET /testcases?q=&start=&limit=` → one
   page of the rail's catalogue (shapes above); empty in fixture mode.
 - `GET  /manual/{plan}` → the state above. `{plan}` is a cycle id/key, or
@@ -478,11 +540,6 @@ appears in this payload.
   → updated case dict. Per-case login the agent uses instead of the `.env`
   default; both empty clears back to the default. The password is never sent
   back to the browser — only `has_password` (a boolean) is.
-- `POST /manual/{plan}/cases/{id}/target-url` body `{ "url": "https://…" }` →
-  updated case dict. Per-case server override the agent runs against instead
-  of `APP_BASE_URL`/`default_url`; `""` clears back to the default. A
-  malformed URL (bad scheme or empty host) returns `422` with a `detail`
-  message shown to the tester instead of being saved.
 - `POST /manual/{plan}/push-qmetry` → `{pushed, skipped, errors}`; gated (409 if QMetry
   not configured or nothing marked). This is the human-in-the-loop write gate, like
   "Log failures to Jira" on the Live tab.
@@ -501,51 +558,6 @@ Unlike the per-step field, the block is **omitted entirely** when a case has no
 parameters (most don't) rather than showing "none" — there's no ambiguity to
 resolve at case level. It arrives with the steps, so it's empty until they
 hydrate.
-
-### Server row (`<TargetUrlRow>`)
-
-Sits directly above the "Login as" credentials row on the Manual case card —
-same `.manual-credentials`-family markup, extended with a `.manual-targeturl`
-modifier class rather than a parallel system:
-
-```
-Server    [ Test ▾ ]  [ https://test.souscheftech.com/login ]  [Save]
-⚠ Non-test server — the agent will click Save/Delete against live data.
-```
-
-- The `<select>` lists a leading `Default` option, then `environments` from
-  `GET /config`, then a trailing `New link…`. Every option does something when
-  picked — there are no inert entries.
-- **Any URL is allowed.** The dropdown is a set of shortcuts, not a
-  whitelist: the address bar is always editable, and the backend accepts any
-  `http(s)` URL with a host (a branch deploy, a custom port, `localhost`).
-  `environments` exists only so the two everyday servers are one click away.
-- Picking `Default` clears the box (back to `APP_BASE_URL`); picking a named
-  environment fills the box with its URL; picking `New link…` clears the box
-  and focuses it so the tester is immediately typing.
-- The selection is DERIVED from `target_url` on every render rather than held
-  as state, so the dropdown and the box cannot drift apart: `""` → `Default`,
-  an exact URL match → that environment, anything else → `New link…`. Typing
-  an address that matches no environment therefore moves the select to
-  `New link…` on its own.
-- The single exception is `newLinkIntent`, a local boolean set when the tester
-  picks `New link…` and hasn't typed yet: without it the now-empty box would
-  derive back to `Default` and yank the dropdown out from under them. It is
-  per-case state, so the row is mounted with `key={testCase.id}` and the flag
-  is discarded on case switch by remounting.
-- The address bar is DM Mono (`.mono`) — it's machine output, like the other
-  URL/ID fields in this app. The "Server" label and help text are Inter, like
-  every other field label.
-- Help text under the row always names the live default: "Leave blank to use
-  the default server (`<default_url>`)."
-- **Warning banner** (`.manual-targeturl-warn`, amber — the same
-  `--amber`/`--amber-soft` token already used for `blocked`, no new color):
-  shown whenever the effective URL (the box's value, or `default_url` if
-  blank) differs from `default_url`. There is no separate "is this
-  production" flag — anything that isn't the normal default gets flagged.
-- Saved via a `Save` button beside the address bar (children of the row,
-  exactly like `<CredentialsRow>`'s Save button) — `POST
-  /manual/{plan}/cases/{id}/target-url`; not autosaved on blur.
 
 ### Step display and verdicts
 - Each step shows, in order: the action, the expected result, its **test data**,

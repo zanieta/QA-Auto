@@ -185,7 +185,7 @@ class Orchestrator:
         plan_key: str,
         credentials: tuple[str, str] | None = None,
         case_credentials: dict[str, tuple[str, str]] | None = None,
-        case_target_urls: dict[str, str] | None = None,
+        target_url: str | None = None,
     ) -> RunState:
         """Run an entire plan end-to-end. Returns the final RunState.
 
@@ -196,9 +196,9 @@ class Orchestrator:
         per-case map is built by the caller (server.py reads ManualStore) so
         this module stays independent of the manual session store.
 
-        `case_target_urls` is a per-case server override (Manual-tab target
-        URL) — case-level only, no run-level equivalent. A case id present in
-        it sets `BrowserSession.base_url` for that case; absent means the
+        `target_url` is the GLOBAL server override (the console-wide setting
+        in `agent/settings.py`) — the SAME value applies to every case in the
+        plan; there is no per-case override any more. None/empty means the
         browser factory's default (APP_BASE_URL). Not a secret: unlike
         credentials, it may be logged.
         """
@@ -231,7 +231,6 @@ class Orchestrator:
         self.on_update(state)
 
         per_case = case_credentials or {}
-        per_case_url = case_target_urls or {}
         for case in cases:
             try:
                 # `or credentials`, not membership: the only producer
@@ -243,7 +242,7 @@ class Orchestrator:
                 await self._execute_case(
                     state, case,
                     credentials=per_case.get(case["id"]) or credentials,
-                    target_url=per_case_url.get(case["id"]),
+                    target_url=target_url,
                 )
             except Exception:
                 log.exception("Case %s crashed; marking blocked", case.get("id"))
@@ -274,8 +273,11 @@ class Orchestrator:
         in any prompt/context string or run_state — it only reaches
         `BrowserSession.credentials`, which `login()` reads directly.
 
-        `target_url`, if given, overrides the .env server for this case only
-        (Manual-tab per-case target URL). Not a secret — it may be logged.
+        `target_url`, if given, overrides the .env server for this run
+        (the console-wide global setting in `agent/settings.py` — server.py
+        passes the same value into every plan run and every Manual single-case
+        run; there is no per-case override any more). Not a secret — it may
+        be logged.
         """
         # Steps-less list, then hydrate just this case: fetching every case's
         # steps to run one of them costs a QMetry call per case in the cycle.

@@ -1118,32 +1118,105 @@ button:focus-visible,
   margin: 4px 0 0;
 }
 
-/* --- per-case Server (target URL) row --------------------------------- */
-.manual-targeturl select {
-  font: inherit;
-  font-size: 13px;
+/* --- GLOBAL Server control (rail, navy) -------------------------------
+   Replaces the removed per-case row (formerly `.manual-targeturl` on the
+   Manual card) — one console-wide value, mounted above the rail's BROWSE
+   picker so it's reachable from both tabs. Stacked vertically (select, then
+   address bar, then Save) to fit the rail's narrow column without overflow;
+   restyled for the navy surface using only existing tokens. */
+.rail-server {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 16px 20px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.rail-server-label {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: rgba(255, 255, 255, 0.55);
+}
+
+.rail-server-select {
+  width: 100%;
   padding: 6px 8px;
-  border: 1px solid rgba(27, 42, 107, 0.18);
   border-radius: var(--radius-sm);
-  background: #fff;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--white);
+  font-family: var(--font);
+  font-size: 12px;
+  cursor: pointer;
 }
 
-.manual-targeturl input {
-  min-width: 260px;
+.rail-server-select option { color: var(--ink); background: var(--white); }
+
+.rail-server-select:focus-visible,
+.rail-server-input:focus-visible {
+  outline: 2px solid var(--white);
+  outline-offset: 1px;
 }
 
-.manual-targeturl-warn {
+.rail-server-input {
+  width: 100%;
+  padding: 6px 8px;
+  border-radius: var(--radius-sm);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--white);
+  font-size: 12px;
+}
+
+.rail-server-input::placeholder { color: rgba(255, 255, 255, 0.4); }
+
+.rail-server-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.rail-server-save {
+  padding: 5px 10px;
+  border-radius: var(--radius-sm);
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  background: transparent;
+  color: var(--white);
+  font-family: var(--font);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.rail-server-save:hover:not(:disabled) { background: rgba(255, 255, 255, 0.1); }
+.rail-server-save:disabled { opacity: 0.5; cursor: default; }
+
+.rail-server-msg {
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.65);
+}
+
+.rail-server-help {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.4;
+  color: rgba(255, 255, 255, 0.4);
+}
+
+.rail-server-warn {
   display: flex;
   align-items: center;
   gap: 6px;
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 600;
   color: var(--amber);
   background: var(--amber-soft);
   border: 1px solid var(--amber);
   border-radius: var(--radius-sm);
-  padding: 6px 10px;
-  margin: 6px 0 0;
+  padding: 6px 8px;
+  margin: 0;
 }
 
 @media (max-width: 640px) {

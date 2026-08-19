@@ -16,8 +16,6 @@ export default function ManualView({
   loading,
   refresh,
   activeId,
-  environments = [],
-  defaultUrl,
 }) {
   const [pushing, setPushing] = useState(false)
   const [pushMsg, setPushMsg] = useState(null)
@@ -116,8 +114,6 @@ export default function ManualView({
           plan={plan}
           testCase={activeCase}
           onChanged={refresh}
-          environments={environments}
-          defaultUrl={defaultUrl}
         />
       ) : (
         <p className="manual-empty">No cases in this cycle yet.</p>

@@ -17,6 +17,7 @@ frontend/dist/
 .env.*
 !.env.example
 manual_sessions/
+settings.json
 logs/
 *.log
 scripts/_corp-ca-bundle.pem

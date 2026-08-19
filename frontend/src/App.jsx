@@ -20,7 +20,7 @@ import {
   startRun,
   useRunState,
 } from './hooks/useRunState.js'
-import { useManualState } from './hooks/useManualState.js'
+import { saveGlobalTargetUrl, useManualState } from './hooks/useManualState.js'
 
 export default function App() {
   const [runId, setRunId] = useState(null)
@@ -53,10 +53,14 @@ export default function App() {
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   const [defaultCycle, setDefaultCycle] = useState(null)
-  // environments + default_url feed the per-case Server row on the Manual tab
-  // (see TargetUrlRow.jsx) — same /config call, no extra request.
+  // environments + default_url feed the rail's GLOBAL Server control
+  // (see ServerPicker.jsx) — same /config call, no extra request. target_url
+  // is the console-wide current value (server-side, not per case).
   const [environments, setEnvironments] = useState([])
   const [defaultUrl, setDefaultUrl] = useState(null)
+  const [targetUrl, setTargetUrl] = useState('')
+  const [savingTargetUrl, setSavingTargetUrl] = useState(false)
+  const [targetUrlMsg, setTargetUrlMsg] = useState(null)
   useEffect(() => {
     fetch('/config', { cache: 'no-store' })
       .then((r) => (r.ok ? r.json() : null))
@@ -64,9 +68,23 @@ export default function App() {
         setDefaultCycle(c?.default_cycle ?? null)
         setEnvironments(c?.environments ?? [])
         setDefaultUrl(c?.default_url ?? null)
+        setTargetUrl(c?.target_url ?? '')
       })
       .catch(() => {})
   }, [])
+
+  async function handleSaveTargetUrl() {
+    setTargetUrlMsg(null)
+    setSavingTargetUrl(true)
+    try {
+      await saveGlobalTargetUrl(targetUrl)
+      setTargetUrlMsg(targetUrl ? 'saved' : 'cleared — using default server')
+    } catch (e) {
+      setTargetUrlMsg(e.message)
+    } finally {
+      setSavingTargetUrl(false)
+    }
+  }
 
   function selectPlan(planKeyToOpen) {
     if (planKeyToOpen !== chosenPlan) {
@@ -185,6 +203,11 @@ export default function App() {
 
   const isRunning = liveState?.status === 'running'
   const isDone = liveState?.status === 'done'
+  // Global Server control disables while ANY run (Live tab, or a Manual-tab
+  // per-case agent run) is in flight — either could be mid-navigation against
+  // the target it names.
+  const manualAgentRunning = manualState?.cases?.some((c) => c.manual.agent_status === 'running')
+  const targetUrlDisabled = isRunning || Boolean(manualAgentRunning)
 
   async function handleRun() {
     if (!planKey) return
@@ -238,6 +261,14 @@ export default function App() {
         drilledIn={drilledIn}
         onBack={handleBack}
         browseActiveKey={isStandalone ? chosenPlan.slice(3) : null}
+        targetUrl={targetUrl}
+        environments={environments}
+        defaultUrl={defaultUrl}
+        onTargetUrlChange={setTargetUrl}
+        onSaveTargetUrl={handleSaveTargetUrl}
+        savingTargetUrl={savingTargetUrl}
+        targetUrlMsg={targetUrlMsg}
+        targetUrlDisabled={targetUrlDisabled}
       />
       <main className="stage">
         <nav className="view-tabs" role="tablist" aria-label="Console view">
@@ -306,8 +337,6 @@ export default function App() {
             loading={manualLoading}
             refresh={refreshManual}
             activeId={manualActiveId}
-            environments={environments}
-            defaultUrl={defaultUrl}
           />
         )}
 

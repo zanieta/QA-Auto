@@ -7,6 +7,9 @@ Endpoints (see FRONTEND.md):
   POST /runs/{id}/report     -> {"path": ...}      generate HTML report
   POST /runs/{id}/log-bugs   -> {"created": [...]} gated: only on done + has failures
   POST /runs/{id}/cancel     -> {"cancelled": true} cancel a running background task
+  GET  /config                    -> non-secret bootstrap, incl. the global target_url
+  POST /settings/target-url  -> {"target_url": ...} set the GLOBAL server override
+                                 for every run (persisted to settings.json)
 
 In production, also serves frontend/dist as static files.
 """
@@ -37,6 +40,7 @@ from agent.knowledge import record_override
 from agent.manual_state import ManualStore, compose_agent_note, compose_comment
 from agent.orchestrator import Orchestrator
 from agent.run_state import RunState, TestCase
+from agent.settings import SettingsStore
 
 # On Windows, the default uvicorn event loop (SelectorEventLoop) cannot spawn
 # subprocesses, so Playwright's browser launch fails with NotImplementedError and
@@ -75,6 +79,7 @@ LATEST: dict[str, dict] = {}
 RUN_CREDENTIALS: dict[str, tuple[str, str]] = {}
 
 MANUAL = ManualStore()
+SETTINGS = SettingsStore()
 
 
 class StartRunBody(BaseModel):
@@ -108,6 +113,21 @@ class CredentialsBody(BaseModel):
 
 class TargetUrlBody(BaseModel):
     url: str = ""
+
+
+def _validate_target_url(url: str) -> str:
+    """"" clears back to the .env APP_BASE_URL default; anything else must
+    parse as an http(s) URL with a host, or this raises a 422 HTTPException so
+    a typo fails at save time instead of surfacing as a mysterious BLOCKED
+    login mid-run."""
+    url = url.strip()
+    if url:
+        parsed = urlparse(url)
+        if parsed.scheme not in ("http", "https") or not parsed.netloc:
+            raise HTTPException(
+                422, f"Invalid target URL {url!r}: must be an http(s) URL with a host"
+            )
+    return url
 
 
 class PushBody(BaseModel):
@@ -227,7 +247,7 @@ async def _run_in_background(run_id: str, plan_key: str, state: RunState) -> Non
             plan_key,
             credentials=RUN_CREDENTIALS.get(run_id),
             case_credentials=_manual_case_credentials(plan_key),
-            case_target_urls=_manual_case_target_urls(plan_key),
+            target_url=SETTINGS.get("target_url") or None,
         )
         RUNS[run_id] = final
     except Exception:
@@ -256,23 +276,6 @@ def _manual_case_credentials(plan_key: str) -> dict[str, tuple[str, str]]:
     return out
 
 
-def _manual_case_target_urls(plan_key: str) -> dict[str, str]:
-    """Per-case server overrides saved in the Manual tab.
-
-    Kept here rather than in the orchestrator so agent/ never imports the
-    manual session store. Skips empties — an empty target_url means "use
-    the .env default", so it has no place in the override map.
-    """
-    session = MANUAL.get(plan_key)
-    if session is None:
-        return {}
-    out: dict[str, str] = {}
-    for case in session.cases:
-        if case.mark.target_url:
-            out[case.id] = case.mark.target_url
-    return out
-
-
 async def _run_agent_case(
     run_id: str,
     plan: str,
@@ -286,14 +289,13 @@ async def _run_agent_case(
     in ManualStore.set_agent preserves the selection recorded at run start.
     """
     creds = None
-    target_url = None
+    target_url = SETTINGS.get("target_url") or None
     session = MANUAL.get(plan)
     if session is not None:
         try:
             mark = session.find_case(case_id).mark
             if mark.login_username and mark.login_password:
                 creds = (mark.login_username, mark.login_password)
-            target_url = mark.target_url or None
         except KeyError:
             pass
     try:
@@ -364,13 +366,26 @@ def _parse_app_environments() -> list[dict]:
 
 @app.get("/config")
 async def get_config() -> dict:
-    """Non-secret frontend bootstrap: which cycle to open by default, and the
-    known-server list for the Manual tab's per-case target URL picker."""
+    """Non-secret frontend bootstrap: which cycle to open by default, the
+    known-server list for the global target URL picker, and its current
+    value."""
     return {
         "default_cycle": os.environ.get("QMETRY_DEFAULT_CYCLE") or None,
         "environments": _parse_app_environments(),
         "default_url": os.environ.get("APP_BASE_URL") or None,
+        "target_url": SETTINGS.get("target_url") or "",
     }
+
+
+@app.post("/settings/target-url")
+async def set_target_url(body: TargetUrlBody) -> dict:
+    """Set the GLOBAL target URL — applies to every run, full-plan or single
+    Manual case, until changed again. "" clears back to the .env
+    APP_BASE_URL default. Persisted to settings.json so it survives a server
+    restart. Not a secret."""
+    url = _validate_target_url(body.url)
+    SETTINGS.set("target_url", url)
+    return {"target_url": url}
 
 
 @app.get("/cycles")
@@ -699,27 +714,6 @@ async def set_case_credentials(plan: str, case_id: str, body: CredentialsBody) -
     payloads contain the username only — never the password."""
     try:
         case = MANUAL.set_credentials(plan, case_id, body.username, body.password)
-    except KeyError as e:
-        raise HTTPException(404, str(e))
-    return case.to_dict()
-
-
-@app.post("/manual/{plan}/cases/{case_id}/target-url")
-async def set_case_target_url(plan: str, case_id: str, body: TargetUrlBody) -> dict:
-    """Per-case server override for the agent. Not a secret, unlike
-    /credentials — the response and every /manual payload carry the URL as-is.
-    "" clears back to the .env APP_BASE_URL default; anything else must parse
-    as an http(s) URL with a host, or this 422s so a typo fails at save time
-    instead of surfacing as a mysterious BLOCKED login mid-run."""
-    url = body.url.strip()
-    if url:
-        parsed = urlparse(url)
-        if parsed.scheme not in ("http", "https") or not parsed.netloc:
-            raise HTTPException(
-                422, f"Invalid target URL {body.url!r}: must be an http(s) URL with a host"
-            )
-    try:
-        case = MANUAL.set_target_url(plan, case_id, url)
     except KeyError as e:
         raise HTTPException(404, str(e))
     return case.to_dict()

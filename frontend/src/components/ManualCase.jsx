@@ -11,13 +11,11 @@ import { useEffect, useRef, useState } from 'react'
 
 import Step from './Step.jsx'
 import CredentialsRow from './CredentialsRow.jsx'
-import TargetUrlRow from './TargetUrlRow.jsx'
 import {
   cancelRun,
   markCase,
   runAgentCase,
   saveCaseCredentials,
-  saveCaseTargetUrl,
 } from '../hooks/useManualState.js'
 import { useRunState } from '../hooks/useRunState.js'
 
@@ -40,7 +38,7 @@ function cleanMarkup(text) {
     .trim()
 }
 
-export default function ManualCase({ plan, testCase, onChanged, environments = [], defaultUrl }) {
+export default function ManualCase({ plan, testCase, onChanged }) {
   const m = testCase.manual
   const allIndices = testCase.steps.map((_, i) => i)
   const [comment, setComment] = useState(m.comment || '')
@@ -55,8 +53,6 @@ export default function ManualCase({ plan, testCase, onChanged, environments = [
   const [loginUser, setLoginUser] = useState(m.login_username || '')
   const [loginPw, setLoginPw] = useState('')
   const [credsMsg, setCredsMsg] = useState(null)
-  const [targetUrl, setTargetUrl] = useState(m.target_url || '')
-  const [targetUrlMsg, setTargetUrlMsg] = useState(null)
 
   // GUARD: useRunState(null) polls the demo fixture — never let fixture data
   // masquerade as a real agent run.
@@ -72,8 +68,6 @@ export default function ManualCase({ plan, testCase, onChanged, environments = [
     setLoginUser(m.login_username || '')
     setLoginPw('')
     setCredsMsg(null)
-    setTargetUrl(m.target_url || '')
-    setTargetUrlMsg(null)
   }, [testCase.id]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const agentRunning =
@@ -137,17 +131,6 @@ export default function ManualCase({ plan, testCase, onChanged, environments = [
       setRunErr(e.message)
     } finally {
       setCancelling(false)
-    }
-  }
-
-  async function handleSaveTargetUrl() {
-    setTargetUrlMsg(null)
-    try {
-      await saveCaseTargetUrl(plan, testCase.id, targetUrl)
-      setTargetUrlMsg(targetUrl ? 'saved' : 'cleared — using default server')
-      await onChanged?.()
-    } catch (e) {
-      setTargetUrlMsg(e.message)
     }
   }
 
@@ -224,25 +207,6 @@ export default function ManualCase({ plan, testCase, onChanged, environments = [
           </dl>
         </div>
       )}
-
-      <TargetUrlRow
-        key={testCase.id}
-        url={targetUrl}
-        environments={environments}
-        defaultUrl={defaultUrl}
-        onUrlChange={setTargetUrl}
-        disabled={agentRunning}
-      >
-        <button
-          type="button"
-          className="btn btn-ghost"
-          disabled={agentRunning}
-          onClick={handleSaveTargetUrl}
-        >
-          Save
-        </button>
-        {targetUrlMsg && <span className="manual-credentials-msg">{targetUrlMsg}</span>}
-      </TargetUrlRow>
 
       <CredentialsRow
         username={loginUser}

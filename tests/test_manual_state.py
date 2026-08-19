@@ -337,30 +337,18 @@ def test_set_credentials_clear_and_keep_semantics(store):
     assert (m.login_username, m.login_password) == ("", "")
 
 
-def test_target_url_set_clear_and_persist_roundtrip(store):
+def test_stale_target_url_key_in_old_session_file_is_ignored():
+    """The per-case target URL override was removed 2026-08-19 in favour of a
+    global setting (agent/settings.py). Existing manual_sessions/<plan>.json
+    files on disk may still carry the now-unused `target_url` key from marks
+    saved before the change — from_dict must ignore it silently, not raise."""
     from agent.manual_state import ManualMark
 
-    store.build("TP-45", "Smoke", RAW_CASES, qmetry_configured=True)
-    store.set_target_url("TP-45", "IRHS-R-01", "https://test.souscheftech.com/login")
-    d = store.get("TP-45").find_case("IRHS-R-01").mark.to_dict()
-    assert d["target_url"] == "https://test.souscheftech.com/login"
-
-    persisted = store.get("TP-45").find_case("IRHS-R-01").mark.to_dict(include_secrets=True)
-    again = ManualMark.from_dict(persisted)
-    assert again.target_url == "https://test.souscheftech.com/login"
-
-    # empty clears back to the .env default
-    store.set_target_url("TP-45", "IRHS-R-01", "")
-    m = store.get("TP-45").find_case("IRHS-R-01").mark
-    assert m.target_url == ""
-
-
-def test_target_url_missing_key_loads_as_empty_string():
-    from agent.manual_state import ManualMark
-
-    m = ManualMark.from_dict({"status": "unmarked"})
-    assert m.target_url == ""
-    assert m.to_dict()["target_url"] == ""
+    m = ManualMark.from_dict(
+        {"status": "pass", "target_url": "https://stale.example.com/login"}
+    )
+    assert not hasattr(m, "target_url")
+    assert "target_url" not in m.to_dict()
 
 
 # ----- per-step marks (task 1, spec 2026-07-09) -----------------------------

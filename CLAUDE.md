@@ -254,14 +254,25 @@ serializes current state on each request.
 
 ### agent/manual_state.py
 The Manual-tab contract. `ManualStore` holds per-case hand marks
-(pass/fail/blocked + note + flagged failing steps + any per-case agent run),
-a per-case login override, and a per-case target-URL override (`target_url` —
-"" means use `APP_BASE_URL`; not a secret, unlike `login_password`, so it
-ships in every `/manual` payload), keyed by plan and snapshotted to
+(pass/fail/blocked + note + flagged failing steps + any per-case agent run)
+and a per-case login override, keyed by plan and snapshotted to
 `manual_sessions/<plan>.json`. `ManualSession`
 serializes to the shape in FRONTEND.md's "Manual session state". `compose_comment`
 builds the QMetry comment from the note + flagged steps. The QMetry execution id is
-held server-side only.
+held server-side only. Which server the agent runs against is NOT here — it's
+a console-wide setting, see `agent/settings.py`. (A per-case `target_url`
+override shipped 2026-08-18 and was corrected to global the next day; a stale
+`target_url` key may still exist in old `manual_sessions/*.json` files —
+`ManualMark.from_dict` ignores unknown keys, so this is harmless.)
+
+### agent/settings.py
+Tiny global console settings, persisted to `settings.json` at the repo root —
+the one piece of server-side state a tester changes from the console itself
+and expects to survive a restart. `SettingsStore` (`get`/`set`, backed by one
+JSON file) currently holds a single key: `target_url`, the server the agent
+runs against for EVERY run (full-plan and single-case Manual runs alike).
+Empty/unset falls back to `APP_BASE_URL`. `settings.json` is gitignored, same
+trust level as `manual_sessions/`.
 
 ### agent/case_source.py
 The seam between the orchestrator and where test plans come from. Defines a
@@ -497,14 +508,19 @@ FastAPI app. Endpoints (exactly what the frontend calls — see FRONTEND.md):
 - `GET /testcases?q=&start=&limit=` → one page of the project's test case library
   `{id, key, name, plan_key}`. Both push `q` down to QMetry and return
   `total` + `next_start`.
+- `GET /config` → non-secret frontend bootstrap: `default_cycle`, the known
+  `environments` list, `default_url` (`APP_BASE_URL`), and `target_url` — the
+  current GLOBAL server override (`""` when unset).
+- `POST /settings/target-url` `{"url": "https://…"}` → set the GLOBAL target
+  URL for every run (full-plan and single-case Manual runs alike); `""` clears
+  back to `APP_BASE_URL`. 422 on a malformed URL (not `http`/`https`, or no
+  host). Persisted to `settings.json` via `agent/settings.py`'s
+  `SettingsStore` so it survives a server restart.
 - `GET /manual/{plan}` → manual session state (`{plan}` = cycle id/key, or
   `TC:<case key>` for a library case).
 - `GET /manual/{plan}/cases/{id}/steps` → hydrate one case's steps on demand.
 - `POST /manual/{plan}/cases/{id}/mark` → record a hand mark.
 - `POST /manual/{plan}/cases/{id}/credentials` → per-case login override.
-- `POST /manual/{plan}/cases/{id}/target-url` `{"url": "https://…"}` → per-case
-  server override for the agent; `""` clears back to `APP_BASE_URL`. 422 on a
-  malformed URL (not `http`/`https`, or no host), 404 on an unknown case.
 - `POST /manual/{plan}/cases/{id}/run-agent` → run one case with the agent.
 - `POST /manual/{plan}/push-qmetry` → gated push of manual results to QMetry.
 - Serves `frontend/dist` as static files in production.

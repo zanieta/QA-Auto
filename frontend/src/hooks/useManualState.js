@@ -117,15 +117,14 @@ export async function saveCaseCredentials(planKey, caseId, username, password) {
   return res.json()
 }
 
-export async function saveCaseTargetUrl(planKey, caseId, url) {
-  const res = await fetch(
-    `/manual/${encodeURIComponent(planKey)}/cases/${encodeURIComponent(caseId)}/target-url`,
-    {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ url }),
-    },
-  )
+// GLOBAL server override (see ServerPicker.jsx, rail-mounted) — one value for
+// the whole console, not per case. "" clears back to APP_BASE_URL/default_url.
+export async function saveGlobalTargetUrl(url) {
+  const res = await fetch('/settings/target-url', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ url }),
+  })
   if (!res.ok) {
     const detail = await res.json().catch(() => ({}))
     throw new Error(detail.detail || `Server save failed: ${res.status}`)

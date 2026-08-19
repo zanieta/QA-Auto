@@ -54,8 +54,7 @@
         "agent_note": "",
         "pushed_to_qmetry": false,
         "login_username": "",
-        "has_password": false,
-        "target_url": ""
+        "has_password": false
       }
     },
     {
@@ -89,8 +88,7 @@
         "agent_note": "",
         "pushed_to_qmetry": false,
         "login_username": "",
-        "has_password": false,
-        "target_url": ""
+        "has_password": false
       }
     },
     {
@@ -122,8 +120,7 @@
         "agent_note": "",
         "pushed_to_qmetry": false,
         "login_username": "",
-        "has_password": false,
-        "target_url": ""
+        "has_password": false
       }
     }
   ],

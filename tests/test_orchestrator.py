@@ -1215,12 +1215,12 @@ async def test_no_credentials_means_none_so_login_uses_dotenv():
     assert seen == [None]
 
 
-# ----- target URL override (per-case only, 2026-08-18) ----------------------
+# ----- target URL override (GLOBAL, corrected 2026-08-19 from per-case) -----
 
 
 @pytest.mark.asyncio
 async def test_run_single_case_sets_browser_base_url(mock_login):
-    """A per-case target URL must land on browser.base_url BEFORE login()
+    """The global target URL must land on browser.base_url BEFORE login()
     awaits — mirrors test_run_single_case_sets_browser_credentials."""
     cases = [
         {"id": "A", "name": "Alpha", "steps": [{"action": "x", "expected": "y"}]},
@@ -1314,17 +1314,16 @@ def _target_url_recorder(cases: list[dict]) -> tuple[Orchestrator, list]:
 
 
 @pytest.mark.asyncio
-async def test_per_case_target_url_applies_to_that_case_only():
+async def test_global_target_url_applies_to_every_case_in_the_plan():
+    """The global setting is ONE value for the whole run — every case gets
+    the same target_url, not a per-case map."""
     orch, seen = _target_url_recorder([_bare_case("TC-1"), _bare_case("TC-2")])
-    await orch.run_plan(
-        "X",
-        case_target_urls={"TC-2": "https://prod.example.com"},
-    )
-    assert seen == [None, "https://prod.example.com"]
+    await orch.run_plan("X", target_url="https://prod.example.com")
+    assert seen == ["https://prod.example.com", "https://prod.example.com"]
 
 
 @pytest.mark.asyncio
-async def test_no_case_target_urls_means_none_for_every_case():
+async def test_no_target_url_means_none_for_every_case():
     orch, seen = _target_url_recorder([_bare_case("TC-1")])
     await orch.run_plan("X")
     assert seen == [None]
