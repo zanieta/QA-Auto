@@ -218,7 +218,7 @@ def test_cancel_running_agent_case_marks_cancelled(monkeypatch, tmp_path):
         async def run_single_case(self, case_id, plan_key=None, step_indices=None, credentials=None, target_url=None):
             await asyncio.sleep(100)
 
-    monkeypatch.setattr(server_mod, "_build_orchestrator", lambda cb: SlowOrch())
+    monkeypatch.setattr(server_mod, "_build_orchestrator", lambda cb, headless=None: SlowOrch())
 
     async def _scenario():
         state = new_run_state("TP-45", "TP-45")
@@ -640,7 +640,7 @@ def test_run_agent_completion_writes_agent_note(client, tmp_path, monkeypatch):
         async def run_single_case(self, case_id, plan_key=None, step_indices=None, credentials=None, target_url=None):
             return final
 
-    monkeypatch.setattr(server_mod, "_build_orchestrator", lambda cb: FakeOrch())
+    monkeypatch.setattr(server_mod, "_build_orchestrator", lambda cb, headless=None: FakeOrch())
     state = new_run_state("TP-45", "TP-45")
     asyncio.run(server_mod._run_agent_case(state.run_id, "TP-45", "A", state, [2]))
 
@@ -804,7 +804,7 @@ def test_run_in_background_prefers_run_body_credentials_over_global(tmp_path, mo
             captured["credentials"] = credentials
             return new_run_state(plan_key)
 
-    monkeypatch.setattr(server_mod, "_build_orchestrator", lambda on_update: FakeOrch())
+    monkeypatch.setattr(server_mod, "_build_orchestrator", lambda on_update, headless=None: FakeOrch())
     monkeypatch.setattr(server_mod, "_manual_case_credentials", lambda plan: {})
     state = new_run_state("P")
     server_mod.RUN_CREDENTIALS[state.run_id] = ("runbody@duke", "runbodypw")
@@ -828,7 +828,7 @@ def test_run_in_background_falls_back_to_global_credentials(tmp_path, monkeypatc
             captured["credentials"] = credentials
             return new_run_state(plan_key)
 
-    monkeypatch.setattr(server_mod, "_build_orchestrator", lambda on_update: FakeOrch())
+    monkeypatch.setattr(server_mod, "_build_orchestrator", lambda on_update, headless=None: FakeOrch())
     monkeypatch.setattr(server_mod, "_manual_case_credentials", lambda plan: {})
     state = new_run_state("P")
     # No entry in RUN_CREDENTIALS for this run id.
@@ -851,7 +851,7 @@ def test_run_in_background_credentials_none_when_neither_set(tmp_path, monkeypat
             captured["credentials"] = credentials
             return new_run_state(plan_key)
 
-    monkeypatch.setattr(server_mod, "_build_orchestrator", lambda on_update: FakeOrch())
+    monkeypatch.setattr(server_mod, "_build_orchestrator", lambda on_update, headless=None: FakeOrch())
     monkeypatch.setattr(server_mod, "_manual_case_credentials", lambda plan: {})
     state = new_run_state("P")
 
@@ -894,7 +894,7 @@ def test_run_agent_case_per_case_credentials_beat_global(client, tmp_path, monke
             captured["credentials"] = credentials
             return final
 
-    monkeypatch.setattr(server_mod, "_build_orchestrator", lambda cb: FakeOrch())
+    monkeypatch.setattr(server_mod, "_build_orchestrator", lambda cb, headless=None: FakeOrch())
     state = _new_run_state("TP-45", "TP-45")
     asyncio.run(server_mod._run_agent_case(state.run_id, "TP-45", "A", state, None))
 
@@ -930,7 +930,7 @@ def test_run_agent_case_falls_back_to_global_credentials_when_no_per_case(client
             captured["credentials"] = credentials
             return final
 
-    monkeypatch.setattr(server_mod, "_build_orchestrator", lambda cb: FakeOrch())
+    monkeypatch.setattr(server_mod, "_build_orchestrator", lambda cb, headless=None: FakeOrch())
     state = _new_run_state("TP-45", "TP-45")
     asyncio.run(server_mod._run_agent_case(state.run_id, "TP-45", "A", state, None))
 
@@ -969,7 +969,7 @@ def test_run_agent_case_passes_global_target_url(client, tmp_path, monkeypatch):
             captured["target_url"] = target_url
             return final
 
-    monkeypatch.setattr(server_mod, "_build_orchestrator", lambda cb: FakeOrch())
+    monkeypatch.setattr(server_mod, "_build_orchestrator", lambda cb, headless=None: FakeOrch())
     state = new_run_state("TP-45", "TP-45")
     asyncio.run(server_mod._run_agent_case(state.run_id, "TP-45", "A", state, None))
 
@@ -1016,7 +1016,7 @@ def test_run_agent_case_passes_credentials(client, tmp_path, monkeypatch):
             captured["credentials"] = credentials
             return final
 
-    monkeypatch.setattr(server_mod, "_build_orchestrator", lambda cb: FakeOrch())
+    monkeypatch.setattr(server_mod, "_build_orchestrator", lambda cb, headless=None: FakeOrch())
     state = new_run_state("TP-45", "TP-45")
     asyncio.run(server_mod._run_agent_case(state.run_id, "TP-45", "A", state, None))
 
@@ -1050,7 +1050,7 @@ def test_run_agent_crash_writes_agent_note(client, tmp_path, monkeypatch):
         async def run_single_case(self, case_id, plan_key=None, step_indices=None, credentials=None, target_url=None):
             raise RuntimeError("boom")
 
-    monkeypatch.setattr(server_mod, "_build_orchestrator", lambda cb: CrashingOrch())
+    monkeypatch.setattr(server_mod, "_build_orchestrator", lambda cb, headless=None: CrashingOrch())
     state = new_run_state("TP-45", "TP-45")
     state.add_case(TestCase(id="A", name="Case A"))
     asyncio.run(server_mod._run_agent_case(state.run_id, "TP-45", "A", state, None))
@@ -1658,7 +1658,7 @@ def test_run_credentials_cleared_when_run_plan_crashes():
         async def run_plan(self, plan_key, credentials=None, case_credentials=None, target_url=None):
             raise RuntimeError("boom")
 
-    with patch.object(server_mod, "_build_orchestrator", lambda on_update: CrashingOrch()):
+    with patch.object(server_mod, "_build_orchestrator", lambda on_update, headless=None: CrashingOrch()):
         state = new_run_state("P")
         server_mod.RUN_CREDENTIALS[state.run_id] = ("qa@duke", "pw")
         import asyncio
@@ -1678,7 +1678,7 @@ async def test_run_in_background_forwards_credentials_then_clears_them(monkeypat
             captured["case_credentials"] = case_credentials
             return new_run_state(plan_key)
 
-    monkeypatch.setattr(server_mod, "_build_orchestrator", lambda on_update: FakeOrch())
+    monkeypatch.setattr(server_mod, "_build_orchestrator", lambda on_update, headless=None: FakeOrch())
     monkeypatch.setattr(server_mod, "_manual_case_credentials", lambda plan: {})
     state = new_run_state("P")
     server_mod.RUN_CREDENTIALS[state.run_id] = ("qa@duke", "pw")
@@ -1729,7 +1729,7 @@ def test_run_in_background_forwards_global_target_url(tmp_path, monkeypatch):
             captured["target_url"] = target_url
             return new_run_state(plan_key)
 
-    monkeypatch.setattr(server_mod, "_build_orchestrator", lambda on_update: FakeOrch())
+    monkeypatch.setattr(server_mod, "_build_orchestrator", lambda on_update, headless=None: FakeOrch())
     monkeypatch.setattr(server_mod, "_manual_case_credentials", lambda plan: {})
     state = new_run_state("P")
 
@@ -1750,10 +1750,79 @@ def test_run_in_background_forwards_none_when_target_url_unset(tmp_path, monkeyp
             captured["target_url"] = target_url
             return new_run_state(plan_key)
 
-    monkeypatch.setattr(server_mod, "_build_orchestrator", lambda on_update: FakeOrch())
+    monkeypatch.setattr(server_mod, "_build_orchestrator", lambda on_update, headless=None: FakeOrch())
     monkeypatch.setattr(server_mod, "_manual_case_credentials", lambda plan: {})
     state = new_run_state("P")
 
     asyncio.run(server_mod._run_in_background(state.run_id, "P", state))
 
     assert captured["target_url"] is None
+
+
+# --------------------------------------------------------------- headless scope
+# HEADLESS=false exists so a human can WATCH a plan execute on the Live tab. A
+# Manual-tab per-case run is a spot check fired off while reading the case in
+# the console, so it must never pop a window over the console. These two tests
+# pin both halves: the env var still governs Live, and Manual overrides it.
+
+
+def test_build_orchestrator_default_leaves_browser_factory_to_env(monkeypatch):
+    """Live run path: no headless argument, so BrowserSession reads HEADLESS."""
+    from agent.browser import BrowserSession
+
+    monkeypatch.setenv("HEADLESS", "false")
+    orch = server_mod._build_orchestrator(lambda _s: None)
+    # The factory is the class itself — constructed with no args, it consults
+    # the env var, which is exactly the pre-existing behaviour.
+    assert orch.browser_factory is BrowserSession
+    assert orch.browser_factory().headless is False
+
+
+def test_build_orchestrator_headless_true_overrides_env(monkeypatch):
+    """Manual tab path: forced headless even with HEADLESS=false in .env."""
+    monkeypatch.setenv("HEADLESS", "false")
+    orch = server_mod._build_orchestrator(lambda _s: None, headless=True)
+    assert orch.browser_factory().headless is True
+
+
+def test_run_agent_case_forces_headless(client, tmp_path, monkeypatch):
+    """The Manual run-agent endpoint must build its orchestrator headless."""
+    import asyncio
+
+    from agent.run_state import Step, TestCase, new_run_state as _new_run_state
+
+    monkeypatch.setattr("agent.manual_state.MANUAL_DIR", tmp_path)
+    server_mod.MANUAL = server_mod.ManualStore()
+    monkeypatch.setattr(
+        server_mod, "SETTINGS", server_mod.SettingsStore(tmp_path / "settings.json")
+    )
+    monkeypatch.setenv("HEADLESS", "false")  # the visible-window setting
+
+    cases = [{"id": "A", "name": "Case A", "steps": [{"action": "do it", "expected": "e"}]}]
+    monkeypatch.setattr(server_mod, "_make_case_source", lambda: _fake_case_source(cases))
+    monkeypatch.setattr(server_mod, "_qmetry_configured", lambda: False)
+    client.get("/manual/TP-45")
+
+    seen = {}
+    real_build = server_mod._build_orchestrator
+
+    def spy(on_update, headless=None):
+        seen["headless"] = headless
+        return real_build(on_update, headless=headless)
+
+    monkeypatch.setattr(server_mod, "_build_orchestrator", spy)
+
+    final = _new_run_state("TP-45", "TP-45")
+    final.add_case(TestCase(id="A", name="Case A"))
+    final.start_case("A")
+    final.add_step("A", Step(action="do it", detail=""))
+    final.resolve_step("A", 0, "pass", "ok", 1.0)
+    final.resolve_case("A", "pass")
+
+    async def fake_run_single_case(self, case_id, **kw):
+        return final
+
+    monkeypatch.setattr(server_mod.Orchestrator, "run_single_case", fake_run_single_case)
+    asyncio.run(server_mod._run_agent_case("run-x", "TP-45", "A", None))
+
+    assert seen["headless"] is True, "Manual runs must not open a browser window"

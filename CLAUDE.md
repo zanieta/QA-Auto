@@ -154,14 +154,24 @@ SERVER_PORT=8000
 FRONTEND_ORIGIN=http://localhost:5173   # for CORS
 
 # Behaviour flags
-HEADLESS=true
+HEADLESS=true                   # applies to FULL PLAN runs (Live run tab + CLI).
+                                # Manual-tab per-case runs are ALWAYS headless
+                                # regardless of this — a spot check must not pop
+                                # a browser window over the console the tester
+                                # is reading (server._build_orchestrator takes
+                                # headless=True on that path only). To watch one
+                                # case, use main.py --testcase with HEADLESS=false.
 SCREENSHOT_ON_PASS=false
 AUTO_CREATE_BUGS=false          # START false; enable only after a verified run
 RUN_MODE=continue               # continue | stop_on_fail
 LOG_LEVEL=INFO
 AGENT_LAUNCH_DELAY_S=3          # pause before a case's first action so a human
                                 # watching a visible window can follow along;
-                                # 0 disables; skipped entirely when HEADLESS=true
+                                # 0 disables; skipped entirely when headless —
+                                # which now includes every Manual-tab run, so
+                                # those no longer pay the 3s either. The presence
+                                # of its "Launch delay" log line is a reliable
+                                # tell that a run was HEADED.
 STEP_MAX_ATTEMPTS=3             # retries per step (re-snapshot + re-translate)
                                 # before escalating a non-pass status
 EVAL_MAX_FRAMES=8               # frames sent to the vision evaluator per step.

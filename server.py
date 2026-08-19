@@ -39,6 +39,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse
 
+from agent.browser import BrowserSession
 from agent.case_source import CaseSource, FixtureCaseSource
 from agent.knowledge import record_override
 from agent.manual_state import ManualStore, compose_agent_note, compose_comment
@@ -235,9 +236,25 @@ def _make_case_source() -> CaseSource:
     return FixtureCaseSource()
 
 
-def _build_orchestrator(on_update) -> Orchestrator:
-    """Construct the orchestrator with environment-driven defaults."""
-    return Orchestrator(case_source=_make_case_source(), on_update=on_update)
+def _build_orchestrator(on_update, headless: bool | None = None) -> Orchestrator:
+    """Construct the orchestrator with environment-driven defaults.
+
+    `headless=True` forces an invisible browser REGARDLESS of the HEADLESS env
+    var. The Manual tab passes it: a per-case run there is a spot check a tester
+    fires off while reading the case in the console, and a Chromium window
+    stealing focus mid-review interrupts the work it is meant to support. It
+    also skips AGENT_LAUNCH_DELAY_S, which only exists so a human can follow a
+    visible window.
+
+    The Live run tab deliberately does NOT pass it, so HEADLESS=false still
+    gives you a window to watch a whole plan execute — that is the tab whose
+    job is watching. To watch a single case, use the CLI:
+    `HEADLESS=false ... main.py --testcase <key>`.
+    """
+    factory = (lambda: BrowserSession(headless=True)) if headless else None
+    return Orchestrator(
+        case_source=_make_case_source(), on_update=on_update, browser_factory=factory
+    )
 
 
 async def _run_in_background(run_id: str, plan_key: str, state: RunState) -> None:
@@ -322,7 +339,9 @@ async def _run_agent_case(
     if creds is None:
         creds = _global_credentials()
     try:
-        orch = _build_orchestrator(_make_on_update(run_id))
+        # headless=True: a Manual-tab run must not pop a browser window over
+        # the console the tester is reading. Live run still honours HEADLESS.
+        orch = _build_orchestrator(_make_on_update(run_id), headless=True)
         final = await orch.run_single_case(
             case_id, plan_key=plan, step_indices=step_indices, credentials=creds,
             target_url=target_url,
