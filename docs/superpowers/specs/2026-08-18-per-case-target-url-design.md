@@ -1,7 +1,27 @@
 # Per-case target URL (server) override — design
 
 **Date:** 2026-08-18
-**Status:** approved, ready to implement
+**Status:** SUPERSEDED 2026-08-19 — implemented, then replaced. Kept as the
+record of the decision and why it changed.
+
+> **What changed and why.** This was built as specified (commit c0115a3), and
+> using it showed the scope was wrong: the tester wants ONE server for the whole
+> console, not a value per test case. It is now a single global setting shown in
+> the left rail and persisted in `settings.json` (commits dae056a, 5b320e9),
+> with the per-case mechanism removed rather than left beside it — two controls
+> for one decision is how a run ends up pointed somewhere nobody intended.
+>
+> Also dropped: the `APP_ENVIRONMENTS` Test/Production dropdown described below.
+> A plain URL box replaced it, which removed more code than it added — the
+> derived-selection logic and the `newLinkIntent` flag existed only to keep a
+> dropdown in sync with the text box.
+>
+> What SURVIVED this reversal, and is still live: the base-URL semantics (login
+> and later relative navigations resolve against the same base), `login()`
+> reading `browser.base_url` instead of the env var directly, save-time URL
+> validation, the non-test-server warning, and the decision to leave
+> `run_state.json` untouched. See FRONTEND.md and CLAUDE.md for current
+> behaviour; this file is history.
 
 ## Problem
 
