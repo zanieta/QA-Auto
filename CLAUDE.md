@@ -199,7 +199,7 @@ system Python. On a machine that is ALREADY set up, the venv's `pip.ini` and
 `frontend/.npmrc` bypass Duke's corporate SSL inspection — don't add
 `--trusted-host` / `--strict-ssl=false` flags by hand.
 
-**On a FRESH CLONE, run `scriptsootstrap.ps1` first.** `frontend/.npmrc` is
+**On a FRESH CLONE, run `scripts\bootstrap.ps1` first.** `frontend/.npmrc` is
 tracked, but the pip half of that bypass lives at `.venv/pip.ini` and `.venv/`
 is gitignored — so it does not travel, and `pip install` fails with certificate
 errors that look like a broken network rather than a missing config. The
@@ -209,7 +209,7 @@ Playwright + frontend deps, reports any `.env` key missing against
 
 ```powershell
 # Fresh clone (does everything below, plus the pip.ini the repo cannot carry)
-powershell -ExecutionPolicy Bypass -File scriptsootstrap.ps1
+powershell -ExecutionPolicy Bypass -File scripts\bootstrap.ps1
 
 # Or by hand, on a machine already bootstrapped
 .venv\Scripts\python.exe -m pip install -r requirements.txt
