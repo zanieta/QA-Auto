@@ -195,12 +195,23 @@ hook in the same change. They are one contract.
 
 The Python env lives in `.venv/` at the repo root (Python 3.14). Always invoke it
 via `.venv/Scripts/python.exe` (Windows) so you don't accidentally pick up a
-system Python. The venv's `pip.ini` and `frontend/.npmrc` already bypass Duke's
-corporate SSL inspection — don't add `--trusted-host` / `--strict-ssl=false`
-flags by hand.
+system Python. On a machine that is ALREADY set up, the venv's `pip.ini` and
+`frontend/.npmrc` bypass Duke's corporate SSL inspection — don't add
+`--trusted-host` / `--strict-ssl=false` flags by hand.
+
+**On a FRESH CLONE, run `scriptsootstrap.ps1` first.** `frontend/.npmrc` is
+tracked, but the pip half of that bypass lives at `.venv/pip.ini` and `.venv/`
+is gitignored — so it does not travel, and `pip install` fails with certificate
+errors that look like a broken network rather than a missing config. The
+bootstrap script creates the venv, writes that `pip.ini`, installs Python +
+Playwright + frontend deps, reports any `.env` key missing against
+`.env.example`, and finishes by running the test suite. It is idempotent.
 
 ```powershell
-# First-time install (or after editing requirements.txt)
+# Fresh clone (does everything below, plus the pip.ini the repo cannot carry)
+powershell -ExecutionPolicy Bypass -File scriptsootstrap.ps1
+
+# Or by hand, on a machine already bootstrapped
 .venv\Scripts\python.exe -m pip install -r requirements.txt
 .venv\Scripts\python.exe -m playwright install chromium
 
