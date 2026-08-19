@@ -127,58 +127,69 @@ scroll or capped-height list), stage below.
 The rail has **two states**: *browse* (nothing open, or a library test case open)
 and *drilled in* (a test run open). The brand block is present in both.
 
-#### Global Server control (`<ServerPicker>`, `.rail-server`)
+#### Global rail settings (`<RailSettings>`, `.rail-settings`)
 Sits directly below the brand block, ABOVE `<CaseBrowser>` — present in both rail
-states, so it reads top-to-bottom: brand → Server control → BROWSE → search →
-list. This is a **console-wide** setting, not per case: one target URL is shared
-by every test run and every case on both the Manual and Live-run tabs (the rail is
-one shared instance, which is why this is its home rather than a per-case widget).
+states, so it reads top-to-bottom: brand → rail settings → BROWSE → search →
+list. Both controls below are **console-wide**, not per case: one target URL and
+one default login are shared by every test run and every case on both the Manual
+and Live-run tabs (the rail is one shared instance, which is why this is their
+home rather than a per-case widget). They render as two stacked, separately
+bordered blocks (`.rail-settings-block`) inside one wrapper.
 
 ```
-Server
-[ Default        ▾ ]
+URL
 [ https://test.souscheftech.com/login          ]
 [Save]  saved
 Blank uses the default server (https://…).
 ⚠ Non-test server — the agent will click Save/Delete against live data.
+
+Login as
+[ username (default admin)   ]
+[ ••• saved                  ]
+[Save]  saved
+Global default login for every run. A case's own saved login (Manual tab)
+overrides this; blank falls back to the .env admin account.
 ```
 
-- Stacked vertically (select, then address bar, then Save button + status
-  message), not side-by-side like the removed per-case row — the rail column is
-  narrow (`--rail-w`, 280px) and a row layout would overflow or wrap badly.
-- The `<select>` lists a leading `Default` option, then `environments` from
-  `GET /config`, then a trailing `New link…`. Every option does something when
-  picked — there are no inert entries.
-- **Any URL is allowed.** The dropdown is a set of shortcuts, not a whitelist:
-  the address bar is always editable, and the backend accepts any `http(s)` URL
-  with a host (a branch deploy, a custom port, `localhost`). `environments`
-  exists only so the two everyday servers are one click away.
-- Picking `Default` clears the box (back to `APP_BASE_URL`); picking a named
-  environment fills the box with its URL; picking `New link…` clears the box
-  and focuses it so the tester is immediately typing.
-- The selection is DERIVED from the current URL on every render rather than
-  held as state, so the dropdown and the box cannot drift apart: `""` → `Default`,
-  an exact URL match → that environment, anything else → `New link…`. Typing an
-  address that matches no environment therefore moves the select to `New link…`
-  on its own.
-- The single exception is `newLinkIntent`, a local boolean set when the tester
-  picks `New link…` and hasn't typed yet: without it the now-empty box would
-  derive back to `Default` and yank the dropdown out from under them.
-- The address bar is DM Mono (`.mono`) — it's machine output, like the other
-  URL/ID fields in this app. The "Server" label and help text are Inter.
-- Help text under the row always names the live default: "Blank uses the default
+**URL box**
+- A plain, always-editable DM Mono (`.mono`) address bar — there is no dropdown.
+  A one-click Test/Production shortcut list (`environments`) used to sit above
+  the box; it was removed because once there's no shortcut list, there's nothing
+  for a derived selection to drift out of sync with, so the simpler always-a-box
+  design has one less state to keep straight (`newLinkIntent` and the
+  match-derives-the-dropdown logic are both gone with it).
+- **Any URL is allowed** — the backend accepts any `http(s)` URL with a host (a
+  branch deploy, a custom port, `localhost`).
+- Help text under the box always names the live default: "Blank uses the default
   server (`<default_url>`)."
-- **Warning** (`.rail-server-warn`, amber — the same `--amber`/`--amber-soft`
+- **Warning** (`.rail-settings-warn`, amber — the same `--amber`/`--amber-soft`
   token already used for `blocked`, no new color): shown whenever the effective
   URL (the box's value, or `default_url` if blank) differs from `default_url`.
   There is no separate "is this production" flag — anything that isn't the
   normal default gets flagged.
-- Saved via a `Save` button below the address bar — `POST /settings/target-url`;
-  not autosaved on blur. Disabled while any run is in flight (a Live-tab run, or
-  a Manual-tab per-case agent run) since either could be mid-navigation against
-  the target it names.
-- Restyled for the rail's dark navy surface (the removed per-case row sat on a
-  light card): translucent-white inputs/select on navy, white text, using only
+- Saved via a `Save` button below the box — `POST /settings/target-url`; not
+  autosaved on blur.
+
+**Login as**
+- The same shared `<CredentialsRow>` used on the Manual case card and the Live
+  stage head (same "Login as" label, same `.manual-credentials` markup/classes),
+  restyled a third time for the rail's navy surface — see "Credential
+  precedence" below for how the three logins relate.
+- Password field shows `••• saved` the same way the per-case row does
+  (`has_password`, never the value itself); both fields empty clears back to
+  `.env`; a username with an empty password keeps the previously-saved password.
+- Saved via its own `Save` button — `POST /settings/credentials`; not autosaved
+  on blur.
+
+**Shared behaviour**
+- Both blocks stacked vertically (not side-by-side like the light-card rows) —
+  the rail column is narrow (`--rail-w`, 280px) and a row layout would overflow
+  or wrap badly.
+- Both disable together while any run is in flight (a Live-tab run, or a
+  Manual-tab per-case agent run) since either could be mid-navigation, or
+  mid-login, against the values they name.
+- Restyled for the rail's dark navy surface (the light-card rows this reuses
+  sit on white): translucent-white inputs on navy, white text, using only
   existing tokens — no new colors introduced.
 
 #### Browse state — `<CaseBrowser>` (`.browser`)
@@ -260,26 +271,45 @@ library case with. Both return empty lists (total 0) in fixture mode.
 more rows than it yields — the server drops rows it won't show — so counting
 kept rows drifts off QMetry's offset and silently skips records.
 
-#### Global Server control endpoint
+#### Global rail settings endpoints
 `POST /settings/target-url` body `{ "url": "https://…" }` → saves the
-console-wide target URL (see "Global Server control" above); `""` clears back
+console-wide target URL (see "Global rail settings" above); `""` clears back
 to `default_url`. A malformed URL (bad scheme or empty host) returns `422`
 with a `detail` message shown to the tester instead of being saved. Read back
 via `GET /config`'s `target_url` field.
+
+`POST /settings/credentials` body `{ "username", "password" }` → saves the
+console-wide default agent login (see "Global rail settings" above and
+"Credential precedence" below); response carries `{username, has_password}`
+only — the password is never echoed back. Both fields empty clears back to
+the `.env` account; a username with an empty password keeps the previously
+saved password (same rule as the Manual tab's per-case
+`POST /manual/{plan}/cases/{id}/credentials`). Read back via `GET /config`'s
+`login_username` / `has_password` fields.
 
 ### 2. Stage head (`.stage-head`)
 - Active test case ID in a navy-soft pill (mono) + the case name (Inter 16/600).
 - **Run button**: primary navy. States: idle ("▶ Run plan"), running (inverts to
   white-on-navy-border, "⏸ Running…"), done ("▶ Run again"). Disabled while a run
   is in progress for other controls.
-- **Login row** (`<CredentialsRow>`, shared with the Manual tab's per-case row —
-  same "Login as" label, same `.manual-credentials` markup and classes): username
-  + password fields beside the Run button. Both disable while a run is in progress
-  (same rule as the Run button). Help copy: "Leave blank to use the system admin
-  account. A case with its own login saved on the Manual tab uses that instead." —
-  a case's own saved credentials (see "Case-level test data" below) always win
-  over whatever is typed here. The password is held in React state only, sent on
-  `POST /runs`, and never echoed back by `GET /runs/{id}`.
+- **Login row** (`<CredentialsRow>`, shared with the Manual tab's per-case row and
+  the rail's global row — same "Login as" label, same `.manual-credentials`
+  markup and classes): username + password fields beside the Run button. Both
+  disable while a run is in progress (same rule as the Run button). Help copy:
+  "Leave blank to use the rail's global login (or the .env admin if that's blank
+  too). A case with its own login saved on the Manual tab overrides both." — see
+  "Credential precedence" below. The password here is held in React state only,
+  sent on `POST /runs`, and never echoed back by `GET /runs/{id}`.
+
+#### Credential precedence
+Three places can name an agent login, in override order: **(1)** a case's own
+saved login on the Manual card (`CredentialsRow`, `POST /manual/{plan}/cases/
+{id}/credentials`) — wins for that case only; **(2)** the rail's global "Login
+as" (`POST /settings/credentials`) — the console-wide default; **(3)** the
+`.env` admin account — the fallback when nothing above is set. Blank at any
+level falls through to the next. The Live tab's stage-head login row (above)
+is a same-session, unsaved override typed at Run time — it sits alongside (1)
+and (2) for a single run rather than persisting anywhere.
 
 ### 3. Stat strip (`.stat-strip`)
 Four inline stats: Total, Passed (green number), Failed (red number), Elapsed (mono,
@@ -503,14 +533,16 @@ The QMetry execution id used to write results back is server-side only and never
 appears in this payload.
 
 ### Endpoints the Manual tab calls
-- `GET  /config` → `{ "default_cycle": "<idOrKey>" | null, "environments": [{"name": "Test", "url": "https://test.souscheftech.com/login"}], "default_url": "https://test.souscheftech.com/login", "target_url": "" }`.
+- `GET  /config` → `{ "default_cycle": "<idOrKey>" | null, "default_url": "https://test.souscheftech.com/login", "target_url": "", "login_username": "", "has_password": false }`.
   `default_cycle` is the cycle the console opens when the URL has no
-  `?cycle=` (from `QMETRY_DEFAULT_CYCLE`). `environments`, `default_url`, and
-  `target_url` feed the rail's GLOBAL Server control (`<ServerPicker>`, in the
-  Rail section above) — `environments` is `[]` when `APP_ENVIRONMENTS` is
-  unset, and the control still offers its free-text address bar in that case.
-  `target_url` is the console-wide current override; `""` means unset (use
-  `default_url`).
+  `?cycle=` (from `QMETRY_DEFAULT_CYCLE`). `default_url` and `target_url` feed
+  the rail's GLOBAL URL control (`<RailSettings>`, in the Rail section above);
+  `target_url` is the console-wide current override, `""` means unset (use
+  `default_url`). `login_username` and `has_password` feed the rail's GLOBAL
+  "Login as" control the same way `login_username`/`has_password` feed a
+  Manual case's per-case row (see "Credential precedence" above) — the
+  password itself is never returned, only whether one is saved. There is no
+  `environments` key any more (the Test/Production dropdown was removed).
 - `GET  /cycles?q=&start=&limit=` and `GET /testcases?q=&start=&limit=` → one
   page of the rail's catalogue (shapes above); empty in fixture mode.
 - `GET  /manual/{plan}` → the state above. `{plan}` is a cycle id/key, or

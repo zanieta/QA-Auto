@@ -20,7 +20,11 @@ import {
   startRun,
   useRunState,
 } from './hooks/useRunState.js'
-import { saveGlobalTargetUrl, useManualState } from './hooks/useManualState.js'
+import {
+  saveGlobalCredentials,
+  saveGlobalTargetUrl,
+  useManualState,
+} from './hooks/useManualState.js'
 
 export default function App() {
   const [runId, setRunId] = useState(null)
@@ -53,22 +57,31 @@ export default function App() {
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   const [defaultCycle, setDefaultCycle] = useState(null)
-  // environments + default_url feed the rail's GLOBAL Server control
-  // (see ServerPicker.jsx) — same /config call, no extra request. target_url
+  // default_url + target_url feed the rail's GLOBAL URL control
+  // (see RailSettings.jsx) — same /config call, no extra request. target_url
   // is the console-wide current value (server-side, not per case).
-  const [environments, setEnvironments] = useState([])
   const [defaultUrl, setDefaultUrl] = useState(null)
   const [targetUrl, setTargetUrl] = useState('')
   const [savingTargetUrl, setSavingTargetUrl] = useState(false)
   const [targetUrlMsg, setTargetUrlMsg] = useState(null)
+  // login_username + has_password feed the rail's GLOBAL "Login as" control
+  // (see RailSettings.jsx) — the console-wide default agent login, overridden
+  // per case by the Manual card's own CredentialsRow and falling back itself
+  // to the `.env` admin account.
+  const [globalUsername, setGlobalUsername] = useState('')
+  const [globalPassword, setGlobalPassword] = useState('')
+  const [hasGlobalPassword, setHasGlobalPassword] = useState(false)
+  const [savingGlobalCredentials, setSavingGlobalCredentials] = useState(false)
+  const [globalCredentialsMsg, setGlobalCredentialsMsg] = useState(null)
   useEffect(() => {
     fetch('/config', { cache: 'no-store' })
       .then((r) => (r.ok ? r.json() : null))
       .then((c) => {
         setDefaultCycle(c?.default_cycle ?? null)
-        setEnvironments(c?.environments ?? [])
         setDefaultUrl(c?.default_url ?? null)
         setTargetUrl(c?.target_url ?? '')
+        setGlobalUsername(c?.login_username ?? '')
+        setHasGlobalPassword(Boolean(c?.has_password))
       })
       .catch(() => {})
   }, [])
@@ -83,6 +96,23 @@ export default function App() {
       setTargetUrlMsg(e.message)
     } finally {
       setSavingTargetUrl(false)
+    }
+  }
+
+  async function handleSaveGlobalCredentials() {
+    setGlobalCredentialsMsg(null)
+    setSavingGlobalCredentials(true)
+    try {
+      const res = await saveGlobalCredentials(globalUsername, globalPassword)
+      setHasGlobalPassword(Boolean(res?.has_password))
+      setGlobalPassword('')
+      setGlobalCredentialsMsg(
+        globalUsername || globalPassword ? 'saved' : 'cleared — using .env account',
+      )
+    } catch (e) {
+      setGlobalCredentialsMsg(e.message)
+    } finally {
+      setSavingGlobalCredentials(false)
     }
   }
 
@@ -203,11 +233,11 @@ export default function App() {
 
   const isRunning = liveState?.status === 'running'
   const isDone = liveState?.status === 'done'
-  // Global Server control disables while ANY run (Live tab, or a Manual-tab
-  // per-case agent run) is in flight — either could be mid-navigation against
-  // the target it names.
+  // Global rail settings (URL + Login as) disable while ANY run (Live tab, or
+  // a Manual-tab per-case agent run) is in flight — either could be
+  // mid-navigation, or mid-login, against the values they name.
   const manualAgentRunning = manualState?.cases?.some((c) => c.manual.agent_status === 'running')
-  const targetUrlDisabled = isRunning || Boolean(manualAgentRunning)
+  const railSettingsDisabled = isRunning || Boolean(manualAgentRunning)
 
   async function handleRun() {
     if (!planKey) return
@@ -262,13 +292,20 @@ export default function App() {
         onBack={handleBack}
         browseActiveKey={isStandalone ? chosenPlan.slice(3) : null}
         targetUrl={targetUrl}
-        environments={environments}
         defaultUrl={defaultUrl}
         onTargetUrlChange={setTargetUrl}
         onSaveTargetUrl={handleSaveTargetUrl}
         savingTargetUrl={savingTargetUrl}
         targetUrlMsg={targetUrlMsg}
-        targetUrlDisabled={targetUrlDisabled}
+        settingsDisabled={railSettingsDisabled}
+        globalUsername={globalUsername}
+        globalPassword={globalPassword}
+        onGlobalUsernameChange={setGlobalUsername}
+        onGlobalPasswordChange={setGlobalPassword}
+        hasGlobalPassword={hasGlobalPassword}
+        onSaveGlobalCredentials={handleSaveGlobalCredentials}
+        savingGlobalCredentials={savingGlobalCredentials}
+        globalCredentialsMsg={globalCredentialsMsg}
       />
       <main className="stage">
         <nav className="view-tabs" role="tablist" aria-label="Console view">
@@ -315,7 +352,7 @@ export default function App() {
                 onUsernameChange={setRunUser}
                 onPasswordChange={setRunPw}
                 disabled={isRunning}
-                helpText="Leave blank to use the system admin account. A case with its own login saved on the Manual tab uses that instead."
+                helpText="Leave blank to use the rail's global login (or the .env admin if that's blank too). A case with its own login saved on the Manual tab overrides both."
               />
             </header>
             <StatStrip state={liveState} />

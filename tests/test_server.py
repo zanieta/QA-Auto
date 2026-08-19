@@ -732,6 +732,211 @@ def test_settings_target_url_persists_across_a_fresh_store_instance(tmp_path):
     assert fresh.get("target_url") == "https://test.souscheftech.com/login"
 
 
+# ----- GLOBAL default login: GET /config + POST /settings/credentials ------
+
+
+def test_settings_credentials_endpoint_sets_and_config_reflects_it(client, tmp_path, monkeypatch):
+    monkeypatch.setattr(server_mod, "SETTINGS", server_mod.SettingsStore(tmp_path / "settings.json"))
+
+    r = client.post(
+        "/settings/credentials", json={"username": "qa@duke", "password": "s3cret"}
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body == {"login_username": "qa@duke", "has_password": True}
+    assert "s3cret" not in r.text
+
+    r2 = client.get("/config")
+    body2 = r2.json()
+    assert body2["login_username"] == "qa@duke"
+    assert body2["has_password"] is True
+    assert "s3cret" not in r2.text
+
+
+def test_settings_credentials_username_only_keeps_stored_password(client, tmp_path, monkeypatch):
+    monkeypatch.setattr(server_mod, "SETTINGS", server_mod.SettingsStore(tmp_path / "settings.json"))
+    client.post("/settings/credentials", json={"username": "qa@duke", "password": "s3cret"})
+
+    r = client.post("/settings/credentials", json={"username": "qa2@duke", "password": ""})
+    assert r.status_code == 200
+    assert r.json() == {"login_username": "qa2@duke", "has_password": True}
+    assert server_mod.SETTINGS.get("login_password") == "s3cret"
+
+
+def test_settings_credentials_both_empty_clears(client, tmp_path, monkeypatch):
+    monkeypatch.setattr(server_mod, "SETTINGS", server_mod.SettingsStore(tmp_path / "settings.json"))
+    client.post("/settings/credentials", json={"username": "qa@duke", "password": "s3cret"})
+
+    r = client.post("/settings/credentials", json={"username": "", "password": ""})
+    assert r.status_code == 200
+    assert r.json() == {"login_username": "", "has_password": False}
+
+
+def test_settings_credentials_never_leaks_password_in_response_body(client, tmp_path, monkeypatch):
+    monkeypatch.setattr(server_mod, "SETTINGS", server_mod.SettingsStore(tmp_path / "settings.json"))
+    r = client.post(
+        "/settings/credentials", json={"username": "qa@duke", "password": "VERY-SECRET-1"}
+    )
+    assert "VERY-SECRET-1" not in r.text
+    r2 = client.get("/config")
+    assert "VERY-SECRET-1" not in r2.text
+
+
+def test_settings_credentials_endpoint_rejects_malformed_body(client):
+    r = client.post("/settings/credentials", json={"username": 123, "password": "x"})
+    assert r.status_code == 422
+
+
+# ----- Login credential precedence: per-case > run-body > global > .env ----
+
+
+def test_run_in_background_prefers_run_body_credentials_over_global(tmp_path, monkeypatch):
+    """RUN_CREDENTIALS (the POST /runs body) outranks the global setting."""
+    import asyncio
+
+    monkeypatch.setattr(server_mod, "SETTINGS", server_mod.SettingsStore(tmp_path / "settings.json"))
+    server_mod.SETTINGS.set_credentials("global@duke", "globalpw")
+
+    captured = {}
+
+    class FakeOrch:
+        async def run_plan(self, plan_key, credentials=None, case_credentials=None, target_url=None):
+            captured["credentials"] = credentials
+            return new_run_state(plan_key)
+
+    monkeypatch.setattr(server_mod, "_build_orchestrator", lambda on_update: FakeOrch())
+    monkeypatch.setattr(server_mod, "_manual_case_credentials", lambda plan: {})
+    state = new_run_state("P")
+    server_mod.RUN_CREDENTIALS[state.run_id] = ("runbody@duke", "runbodypw")
+
+    asyncio.run(server_mod._run_in_background(state.run_id, "P", state))
+
+    assert captured["credentials"] == ("runbody@duke", "runbodypw")
+
+
+def test_run_in_background_falls_back_to_global_credentials(tmp_path, monkeypatch):
+    """No run-body credentials -> the global setting is used."""
+    import asyncio
+
+    monkeypatch.setattr(server_mod, "SETTINGS", server_mod.SettingsStore(tmp_path / "settings.json"))
+    server_mod.SETTINGS.set_credentials("global@duke", "globalpw")
+
+    captured = {}
+
+    class FakeOrch:
+        async def run_plan(self, plan_key, credentials=None, case_credentials=None, target_url=None):
+            captured["credentials"] = credentials
+            return new_run_state(plan_key)
+
+    monkeypatch.setattr(server_mod, "_build_orchestrator", lambda on_update: FakeOrch())
+    monkeypatch.setattr(server_mod, "_manual_case_credentials", lambda plan: {})
+    state = new_run_state("P")
+    # No entry in RUN_CREDENTIALS for this run id.
+
+    asyncio.run(server_mod._run_in_background(state.run_id, "P", state))
+
+    assert captured["credentials"] == ("global@duke", "globalpw")
+
+
+def test_run_in_background_credentials_none_when_neither_set(tmp_path, monkeypatch):
+    """Neither run-body nor global set -> None, so login() falls to .env."""
+    import asyncio
+
+    monkeypatch.setattr(server_mod, "SETTINGS", server_mod.SettingsStore(tmp_path / "settings.json"))
+
+    captured = {}
+
+    class FakeOrch:
+        async def run_plan(self, plan_key, credentials=None, case_credentials=None, target_url=None):
+            captured["credentials"] = credentials
+            return new_run_state(plan_key)
+
+    monkeypatch.setattr(server_mod, "_build_orchestrator", lambda on_update: FakeOrch())
+    monkeypatch.setattr(server_mod, "_manual_case_credentials", lambda plan: {})
+    state = new_run_state("P")
+
+    asyncio.run(server_mod._run_in_background(state.run_id, "P", state))
+
+    assert captured["credentials"] is None
+
+
+def test_run_agent_case_per_case_credentials_beat_global(client, tmp_path, monkeypatch):
+    """Manual-tab per-case login outranks the global setting."""
+    import asyncio
+
+    from agent.run_state import Step, TestCase, new_run_state as _new_run_state
+
+    monkeypatch.setattr("agent.manual_state.MANUAL_DIR", tmp_path)
+    server_mod.MANUAL = server_mod.ManualStore()
+    monkeypatch.setattr(server_mod, "SETTINGS", server_mod.SettingsStore(tmp_path / "settings.json"))
+    server_mod.SETTINGS.set_credentials("global@duke", "globalpw")
+
+    cases = [{"id": "A", "name": "Case A", "steps": [{"action": "do the thing", "expected": "e"}]}]
+    monkeypatch.setattr(server_mod, "_make_case_source", lambda: _fake_case_source(cases))
+    monkeypatch.setattr(server_mod, "_qmetry_configured", lambda: False)
+    client.get("/manual/TP-45")
+    client.post(
+        "/manual/TP-45/cases/A/credentials",
+        json={"username": "case@duke", "password": "casepw"},
+    )
+
+    final = _new_run_state("TP-45", "TP-45")
+    final.add_case(TestCase(id="A", name="Case A"))
+    final.start_case("A")
+    final.add_step("A", Step(action="do the thing", detail=""))
+    final.resolve_step("A", 0, "pass", "Looks right.", 1.0)
+    final.resolve_case("A", "pass")
+
+    captured: dict = {}
+
+    class FakeOrch:
+        async def run_single_case(self, case_id, plan_key=None, step_indices=None, credentials=None, target_url=None):
+            captured["credentials"] = credentials
+            return final
+
+    monkeypatch.setattr(server_mod, "_build_orchestrator", lambda cb: FakeOrch())
+    state = _new_run_state("TP-45", "TP-45")
+    asyncio.run(server_mod._run_agent_case(state.run_id, "TP-45", "A", state, None))
+
+    assert captured["credentials"] == ("case@duke", "casepw")
+
+
+def test_run_agent_case_falls_back_to_global_credentials_when_no_per_case(client, tmp_path, monkeypatch):
+    import asyncio
+
+    from agent.run_state import Step, TestCase, new_run_state as _new_run_state
+
+    monkeypatch.setattr("agent.manual_state.MANUAL_DIR", tmp_path)
+    server_mod.MANUAL = server_mod.ManualStore()
+    monkeypatch.setattr(server_mod, "SETTINGS", server_mod.SettingsStore(tmp_path / "settings.json"))
+    server_mod.SETTINGS.set_credentials("global@duke", "globalpw")
+
+    cases = [{"id": "A", "name": "Case A", "steps": [{"action": "do the thing", "expected": "e"}]}]
+    monkeypatch.setattr(server_mod, "_make_case_source", lambda: _fake_case_source(cases))
+    monkeypatch.setattr(server_mod, "_qmetry_configured", lambda: False)
+    client.get("/manual/TP-45")  # no per-case credentials set
+
+    final = _new_run_state("TP-45", "TP-45")
+    final.add_case(TestCase(id="A", name="Case A"))
+    final.start_case("A")
+    final.add_step("A", Step(action="do the thing", detail=""))
+    final.resolve_step("A", 0, "pass", "Looks right.", 1.0)
+    final.resolve_case("A", "pass")
+
+    captured: dict = {}
+
+    class FakeOrch:
+        async def run_single_case(self, case_id, plan_key=None, step_indices=None, credentials=None, target_url=None):
+            captured["credentials"] = credentials
+            return final
+
+    monkeypatch.setattr(server_mod, "_build_orchestrator", lambda cb: FakeOrch())
+    state = _new_run_state("TP-45", "TP-45")
+    asyncio.run(server_mod._run_agent_case(state.run_id, "TP-45", "A", state, None))
+
+    assert captured["credentials"] == ("global@duke", "globalpw")
+
+
 def test_run_agent_case_passes_global_target_url(client, tmp_path, monkeypatch):
     """_run_agent_case forwards the GLOBAL target_url setting to the orchestrator."""
     import asyncio
@@ -1130,41 +1335,6 @@ def test_config_default_cycle_null_when_unset(client, monkeypatch):
     r = client.get("/config")
     assert r.status_code == 200
     assert r.json()["default_cycle"] is None
-
-
-def test_config_environments_parsed(client, monkeypatch):
-    monkeypatch.setenv(
-        "APP_ENVIRONMENTS",
-        "Test=https://test.souscheftech.com/login,Production=https://souscheftech.com/login",
-    )
-    monkeypatch.setenv("APP_BASE_URL", "https://test.souscheftech.com/login")
-    r = client.get("/config")
-    assert r.status_code == 200
-    body = r.json()
-    assert body["environments"] == [
-        {"name": "Test", "url": "https://test.souscheftech.com/login"},
-        {"name": "Production", "url": "https://souscheftech.com/login"},
-    ]
-    assert body["default_url"] == "https://test.souscheftech.com/login"
-
-
-def test_config_environments_empty_when_unset(client, monkeypatch):
-    monkeypatch.delenv("APP_ENVIRONMENTS", raising=False)
-    r = client.get("/config")
-    assert r.status_code == 200
-    assert r.json()["environments"] == []
-
-
-def test_config_environments_skips_malformed_entry(client, monkeypatch):
-    monkeypatch.setenv(
-        "APP_ENVIRONMENTS",
-        "Test=https://test.souscheftech.com/login,BrokenEntryNoEquals,Empty=",
-    )
-    r = client.get("/config")
-    assert r.status_code == 200
-    assert r.json()["environments"] == [
-        {"name": "Test", "url": "https://test.souscheftech.com/login"}
-    ]
 
 
 def test_config_target_url_empty_when_unset(client, tmp_path, monkeypatch):

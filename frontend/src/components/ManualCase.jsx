@@ -215,7 +215,7 @@ export default function ManualCase({ plan, testCase, onChanged }) {
         onPasswordChange={setLoginPw}
         disabled={agentRunning}
         savedPassword={m.has_password}
-        helpText="Leave blank to use the system admin account."
+        helpText="Overrides the rail's global login for this case only. Leave blank to use the rail's account, or the .env admin if that's blank too."
       >
         <button
           type="button"

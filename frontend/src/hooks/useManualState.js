@@ -117,7 +117,7 @@ export async function saveCaseCredentials(planKey, caseId, username, password) {
   return res.json()
 }
 
-// GLOBAL server override (see ServerPicker.jsx, rail-mounted) — one value for
+// GLOBAL server override (see RailSettings.jsx, rail-mounted) — one value for
 // the whole console, not per case. "" clears back to APP_BASE_URL/default_url.
 export async function saveGlobalTargetUrl(url) {
   const res = await fetch('/settings/target-url', {
@@ -128,6 +128,24 @@ export async function saveGlobalTargetUrl(url) {
   if (!res.ok) {
     const detail = await res.json().catch(() => ({}))
     throw new Error(detail.detail || `Server save failed: ${res.status}`)
+  }
+  return res.json()
+}
+
+// GLOBAL default agent login (see RailSettings.jsx, rail-mounted) — one
+// account for the whole console, overridden per case by
+// `saveCaseCredentials` above and falling back itself to the `.env` admin
+// account. Both fields empty clears back to `.env`; a username with an empty
+// password keeps the previously-saved password (mirrors saveCaseCredentials).
+export async function saveGlobalCredentials(username, password) {
+  const res = await fetch('/settings/credentials', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username, password }),
+  })
+  if (!res.ok) {
+    const detail = await res.json().catch(() => ({}))
+    throw new Error(detail.detail || `Credentials save failed: ${res.status}`)
   }
   return res.json()
 }

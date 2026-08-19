@@ -196,6 +196,18 @@ class Orchestrator:
         per-case map is built by the caller (server.py reads ManualStore) so
         this module stays independent of the manual session store.
 
+        Precedence (highest wins), all resolved by the caller before this
+        method ever runs — this module has no idea any of the lower tiers
+        exist:
+          1. per-case credentials (Manual tab, `case_credentials`)
+          2. the `credentials` passed in the `POST /runs` request body
+          3. the global default login (`agent/settings.py`, console-wide)
+          4. `.env` `APP_USERNAME`/`APP_PASSWORD`
+        Tiers 2-4 are collapsed into the single `credentials` argument by
+        server.py (`RUN_CREDENTIALS.get(run_id) or _global_credentials()`,
+        falling through to None so `login()` reads .env) before calling here;
+        this method only ever applies `per_case.get(case_id) or credentials`.
+
         `target_url` is the GLOBAL server override (the console-wide setting
         in `agent/settings.py`) — the SAME value applies to every case in the
         plan; there is no per-case override any more. None/empty means the
@@ -269,9 +281,13 @@ class Orchestrator:
         executed steps.
 
         `credentials`, if given, overrides the .env login account for this
-        case only (Manual-tab per-case credentials). Never logged, never put
-        in any prompt/context string or run_state — it only reaches
-        `BrowserSession.credentials`, which `login()` reads directly.
+        case only. Never logged, never put in any prompt/context string or
+        run_state — it only reaches `BrowserSession.credentials`, which
+        `login()` reads directly. Called for a single Manual-tab case, so
+        there is no run-level POST body tier here; server.py resolves the
+        same precedence one level down: per-case credentials (Manual tab)
+        > the global default login (`agent/settings.py`) > .env, and passes
+        the result in as this one `credentials` argument.
 
         `target_url`, if given, overrides the .env server for this run
         (the console-wide global setting in `agent/settings.py` — server.py

@@ -134,12 +134,13 @@ JIRA_BUG_ISSUE_TYPE=Bug
 APP_BASE_URL=https://<sous-chef-cloud-uat-url>
 APP_USERNAME=<test-user-email>
 APP_PASSWORD=<test-user-password>
-APP_ENVIRONMENTS=                # optional; "Name=url" pairs, comma separated
-                                  # (e.g. Test=https://test.souscheftech.com/login,
-                                  # Production=https://souscheftech.com/login).
-                                  # Surfaced via GET /config as environments +
-                                  # default_url for the Manual tab's per-case
-                                  # target-URL picker. Not a secret.
+                                  # Both of the above are the LOWEST-precedence
+                                  # fallback. A tester can override either from
+                                  # the console (no restart) via
+                                  # POST /settings/target-url and
+                                  # POST /settings/credentials, persisted to
+                                  # settings.json — see agent/settings.py and
+                                  # the credential precedence chain below.
 
 # Server
 SERVER_HOST=127.0.0.1
@@ -269,10 +270,20 @@ override shipped 2026-08-18 and was corrected to global the next day; a stale
 Tiny global console settings, persisted to `settings.json` at the repo root —
 the one piece of server-side state a tester changes from the console itself
 and expects to survive a restart. `SettingsStore` (`get`/`set`, backed by one
-JSON file) currently holds a single key: `target_url`, the server the agent
-runs against for EVERY run (full-plan and single-case Manual runs alike).
-Empty/unset falls back to `APP_BASE_URL`. `settings.json` is gitignored, same
-trust level as `manual_sessions/`.
+JSON file) holds:
+- `target_url` — the server the agent runs against for EVERY run (full-plan
+  and single-case Manual runs alike). Empty/unset falls back to `APP_BASE_URL`.
+- `login_username` / `login_password` — the GLOBAL default login, one tier
+  below a per-case override and a run-level override, one tier above `.env`
+  (see the credential precedence chain under `agent/orchestrator.py`).
+  `set_credentials(username, password)` mirrors `ManualStore.set_credentials`
+  exactly: both empty clears back to `.env`; a username with an empty
+  password KEEPS the stored password. `login_password` is persisted in
+  PLAINTEXT but `credentials_dict()` (used by `GET /config` and
+  `POST /settings/credentials`) exposes only `login_username` and a boolean
+  `has_password` — same pattern as `ManualMark.to_dict`, never the password
+  itself, never in a log line or a model prompt.
+`settings.json` is gitignored, same trust level as `manual_sessions/`.
 
 ### agent/case_source.py
 The seam between the orchestrator and where test plans come from. Defines a
@@ -422,6 +433,21 @@ QMetry → (if fail and bugs enabled) create Jira bug → close browser. Updates
 run_state after every step so the frontend stays live. Catches all per-case
 exceptions so one bad case never kills the run.
 
+**Login credential precedence (2026-08-19).** Highest wins:
+1. per-case credentials (Manual tab, `ManualStore.set_credentials`)
+2. credentials passed in the `POST /runs` request body (run-level, held only
+   in `server.RUN_CREDENTIALS` for the run's lifetime)
+3. the global default login (`agent/settings.py`'s `SettingsStore`,
+   console-wide, survives a restart)
+4. `.env` `APP_USERNAME`/`APP_PASSWORD`
+`Orchestrator.run_plan`/`run_single_case` only ever see tiers 1-2 collapsed
+into their `credentials`/`case_credentials` arguments (unchanged logic:
+`per_case.get(case_id) or credentials`) — server.py resolves tier 3 before
+calling in (`RUN_CREDENTIALS.get(run_id) or _global_credentials()` for a
+full-plan run; per-case mark or the global setting for a Manual single-case
+run), and tier 4 is `login()`'s own fallback when `credentials` is still
+`None`. The orchestrator module has no idea the global setting exists.
+
 **PAGE DATA block (2026-08-13).** TC-2915 ("Verify Cannot Edit Email Address to
 One That Already Exists") has empty QMetry `test_data`, so the model invented
 `existing.user@example.com` — an address that exists nowhere — and the app
@@ -508,14 +534,20 @@ FastAPI app. Endpoints (exactly what the frontend calls — see FRONTEND.md):
 - `GET /testcases?q=&start=&limit=` → one page of the project's test case library
   `{id, key, name, plan_key}`. Both push `q` down to QMetry and return
   `total` + `next_start`.
-- `GET /config` → non-secret frontend bootstrap: `default_cycle`, the known
-  `environments` list, `default_url` (`APP_BASE_URL`), and `target_url` — the
-  current GLOBAL server override (`""` when unset).
+- `GET /config` → non-secret frontend bootstrap: `default_cycle`, `default_url`
+  (`APP_BASE_URL`), `target_url` — the current GLOBAL server override (`""`
+  when unset) — and `login_username` + `has_password` for the GLOBAL default
+  login (never the password itself).
 - `POST /settings/target-url` `{"url": "https://…"}` → set the GLOBAL target
   URL for every run (full-plan and single-case Manual runs alike); `""` clears
   back to `APP_BASE_URL`. 422 on a malformed URL (not `http`/`https`, or no
   host). Persisted to `settings.json` via `agent/settings.py`'s
   `SettingsStore` so it survives a server restart.
+- `POST /settings/credentials` `{"username": "", "password": ""}` → set the
+  GLOBAL default login (see the credential precedence chain under
+  `agent/orchestrator.py`). Both empty clears back to `.env`; a username with
+  an empty password keeps the stored password. Response is
+  `{"login_username": ..., "has_password": ...}` — never the password.
 - `GET /manual/{plan}` → manual session state (`{plan}` = cycle id/key, or
   `TC:<case key>` for a library case).
 - `GET /manual/{plan}/cases/{id}/steps` → hydrate one case's steps on demand.

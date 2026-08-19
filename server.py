@@ -8,8 +8,12 @@ Endpoints (see FRONTEND.md):
   POST /runs/{id}/log-bugs   -> {"created": [...]} gated: only on done + has failures
   POST /runs/{id}/cancel     -> {"cancelled": true} cancel a running background task
   GET  /config                    -> non-secret bootstrap, incl. the global target_url
+                                     and login_username/has_password
   POST /settings/target-url  -> {"target_url": ...} set the GLOBAL server override
                                  for every run (persisted to settings.json)
+  POST /settings/credentials -> {"login_username": ..., "has_password": ...}
+                                 set the GLOBAL default login (persisted to
+                                 settings.json; password never echoed back)
 
 In production, also serves frontend/dist as static files.
 """
@@ -245,7 +249,9 @@ async def _run_in_background(run_id: str, plan_key: str, state: RunState) -> Non
         # Easiest: have the orchestrator return a fresh state and replace RUNS[run_id].
         final = await orch.run_plan(
             plan_key,
-            credentials=RUN_CREDENTIALS.get(run_id),
+            # Precedence (see Orchestrator.run_plan docstring): per-case >
+            # this run-level pair > the global setting > .env.
+            credentials=RUN_CREDENTIALS.get(run_id) or _global_credentials(),
             case_credentials=_manual_case_credentials(plan_key),
             target_url=SETTINGS.get("target_url") or None,
         )
@@ -257,6 +263,18 @@ async def _run_in_background(run_id: str, plan_key: str, state: RunState) -> Non
         _make_on_update(run_id)(state)
     finally:
         RUN_CREDENTIALS.pop(run_id, None)
+
+
+def _global_credentials() -> tuple[str, str] | None:
+    """The console-wide default login (agent/settings.py), or None if unset.
+
+    None here means "fall through to .env APP_USERNAME/APP_PASSWORD" — the
+    same convention run-level and per-case credentials already use
+    (BrowserSession.credentials=None -> login() reads .env).
+    """
+    user = SETTINGS.get("login_username")
+    pw = SETTINGS.get("login_password")
+    return (user, pw) if user and pw else None
 
 
 def _manual_case_credentials(plan_key: str) -> dict[str, tuple[str, str]]:
@@ -298,6 +316,11 @@ async def _run_agent_case(
                 creds = (mark.login_username, mark.login_password)
         except KeyError:
             pass
+    # Precedence: per-case (above) > the global setting > .env (creds stays
+    # None and login() reads APP_USERNAME/APP_PASSWORD). There is no run-level
+    # POST body for a single Manual-tab agent run, so that tier is skipped here.
+    if creds is None:
+        creds = _global_credentials()
     try:
         orch = _build_orchestrator(_make_on_update(run_id))
         final = await orch.run_single_case(
@@ -339,41 +362,16 @@ async def _run_agent_case(
 # ---------------------------------------------------------------- endpoints
 
 
-def _parse_app_environments() -> list[dict]:
-    """Parse `APP_ENVIRONMENTS` ("Name=url,Name=url") into [{"name", "url"}].
-
-    A malformed entry (no "=", or an empty name/url) is skipped with a
-    logged warning rather than crashing /config; unset or all-malformed
-    yields [].
-    """
-    raw = os.environ.get("APP_ENVIRONMENTS", "")
-    out: list[dict] = []
-    for entry in raw.split(","):
-        entry = entry.strip()
-        if not entry:
-            continue
-        if "=" not in entry:
-            log.warning("Skipping malformed APP_ENVIRONMENTS entry: %r", entry)
-            continue
-        name, _, url = entry.partition("=")
-        name, url = name.strip(), url.strip()
-        if not name or not url:
-            log.warning("Skipping malformed APP_ENVIRONMENTS entry: %r", entry)
-            continue
-        out.append({"name": name, "url": url})
-    return out
-
-
 @app.get("/config")
 async def get_config() -> dict:
     """Non-secret frontend bootstrap: which cycle to open by default, the
-    known-server list for the global target URL picker, and its current
-    value."""
+    global target URL and its current value, and the global default login
+    username (never the password — see agent/settings.py)."""
     return {
         "default_cycle": os.environ.get("QMETRY_DEFAULT_CYCLE") or None,
-        "environments": _parse_app_environments(),
         "default_url": os.environ.get("APP_BASE_URL") or None,
         "target_url": SETTINGS.get("target_url") or "",
+        **SETTINGS.credentials_dict(),
     }
 
 
@@ -386,6 +384,19 @@ async def set_target_url(body: TargetUrlBody) -> dict:
     url = _validate_target_url(body.url)
     SETTINGS.set("target_url", url)
     return {"target_url": url}
+
+
+@app.post("/settings/credentials")
+async def set_global_credentials(body: CredentialsBody) -> dict:
+    """Set the GLOBAL default login — one tier below a per-case override
+    (Manual tab) and a run-level override (POST /runs body), one tier above
+    the .env APP_USERNAME/APP_PASSWORD account. Both fields empty clears back
+    to .env; a username with an empty password keeps the stored password
+    (see SettingsStore.set_credentials). Persisted to settings.json in
+    plaintext, same trust level as .env; the response never carries the
+    password."""
+    SETTINGS.set_credentials(body.username, body.password)
+    return SETTINGS.credentials_dict()
 
 
 @app.get("/cycles")

@@ -8,7 +8,7 @@
 //                white background.
 
 import CaseBrowser from './CaseBrowser.jsx'
-import ServerPicker from './ServerPicker.jsx'
+import RailSettings from './RailSettings.jsx'
 
 export default function Rail({
   state,
@@ -21,13 +21,20 @@ export default function Rail({
   onBack,
   browseActiveKey,
   targetUrl,
-  environments,
   defaultUrl,
   onTargetUrlChange,
   onSaveTargetUrl,
   savingTargetUrl,
   targetUrlMsg,
-  targetUrlDisabled,
+  settingsDisabled,
+  globalUsername,
+  globalPassword,
+  onGlobalUsernameChange,
+  onGlobalPasswordChange,
+  hasGlobalPassword,
+  onSaveGlobalCredentials,
+  savingGlobalCredentials,
+  globalCredentialsMsg,
 }) {
   const summary = state?.summary ?? { total: 0, passed: 0, failed: 0, blocked: 0 }
   const cases = state?.test_cases ?? []
@@ -57,15 +64,22 @@ export default function Rail({
       {/* GLOBAL, not per-case — one value for the whole console, visible and
           settable regardless of browse/drilled-in state or which tab (Manual
           vs Live run) is active, since the rail is one shared instance. */}
-      <ServerPicker
+      <RailSettings
         url={targetUrl}
-        environments={environments}
         defaultUrl={defaultUrl}
         onUrlChange={onTargetUrlChange}
-        onSave={onSaveTargetUrl}
-        saving={savingTargetUrl}
-        msg={targetUrlMsg}
-        disabled={targetUrlDisabled}
+        onSaveUrl={onSaveTargetUrl}
+        savingUrl={savingTargetUrl}
+        urlMsg={targetUrlMsg}
+        username={globalUsername}
+        password={globalPassword}
+        onUsernameChange={onGlobalUsernameChange}
+        onPasswordChange={onGlobalPasswordChange}
+        savedPassword={hasGlobalPassword}
+        onSaveCredentials={onSaveGlobalCredentials}
+        savingCredentials={savingGlobalCredentials}
+        credentialsMsg={globalCredentialsMsg}
+        disabled={settingsDisabled}
       />
 
       {!drilledIn ? (
