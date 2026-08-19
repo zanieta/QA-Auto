@@ -120,8 +120,14 @@ EVALUATOR_PROMPT_FILE=            # optional; which prompts/*.txt the evaluator
                                   # (gpt-4o-tuned) when unset.
 
 # QMetry
-QMETRY_BASE_URL=https://dukemanufacturing.atlassian.net
+# No QMETRY_BASE_URL: the client targets qtmcloud.qmetry.com, not the Jira host.
 QMETRY_API_KEY=<your-qmetry-api-key>
+QMETRY_PROJECT_ID=<numeric project id>   # REQUIRED — projectId filter for the
+                                  # rail's TR/TC catalogue search. QMetry
+                                  # silently ignores an unusable filter, so a
+                                  # blank value returns the wrong set instead
+                                  # of erroring.
+QMETRY_DEFAULT_CYCLE=             # optional; cycle the console opens with
 
 # Jira (Atlassian)
 JIRA_BASE_URL=https://dukemanufacturing.atlassian.net
