@@ -256,6 +256,24 @@ backend therefore handles three query shapes; the frontend just sends `?q=`:
   dot states: `queued` (dashed border), `run` (pulsing white dot), `pass` (solid
   green ✓), `fail` (solid red ✕). Active row gets a translucent white background.
 
+#### Emergency stop (`.rail-stop`)
+A danger-styled full-width button in the rail, directly below the global rail
+settings. Rendered in **both** rail states (browse and drilled-in) and on
+**both** tabs, always in the same place — a brake you have to go looking for is
+not a brake. Copy: `■ Stop everything`, `Stopping…` while in flight.
+
+Enabled only while something is running (`isRunning || manualAgentRunning` — the
+same condition that disables the global rail settings). **Disabled rather than
+hidden** when idle, so its location is learned before it is needed. On success a
+small line beneath reports `Stopped 2 runs` / `Nothing was running`.
+
+No optimistic local state: the existing pollers pick up the cancelled status, so
+the server's view of what is running stays the only source of truth.
+
+**Known limitation:** no browser cleanup. Cancelling a *headed* full-plan run
+mid-action can leave a Chromium window open with nothing driving it. Manual-tab
+runs are always headless, so they are unaffected.
+
 #### Catalogue endpoints
 Both return the same page shape; only the array key differs.
 
@@ -440,6 +458,13 @@ poll lag so steps appear the instant the agent resolves them.
 - `POST /runs/{id}/push-qmetry` → `{pushed, skipped, errors}`; gated (409 unless
   QMetry configured and the run is done) — writes per-step results, explicit,
   never automatic.
+- `POST /stop` (no body) → `{"cancelled": ["run-1a2b3c4d", …]}`. **Emergency
+  stop**: cancels EVERY in-flight run in one press — the Live-run plan and any
+  Manual-tab per-case agent run alike. Idempotent: `200` with an empty list
+  when nothing is running, never `404`; a safety control that errors when
+  pressed twice is not a safety control. Already-finished runs are excluded
+  from the list. It does NOT close orphaned browsers or clear stranded manual
+  marks — see "Emergency stop" under the rail.
 
 The frontend NEVER calls QMetry, Jira, or Azure directly — all of that is the
 backend's job. The frontend only talks to the agent's own server. This keeps all

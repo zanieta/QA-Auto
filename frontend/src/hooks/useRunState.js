@@ -91,3 +91,12 @@ export async function pushRunToQmetry(runId, mode) {
   }
   return res.json()
 }
+
+// Emergency stop: cancels EVERY in-flight run (Live-run plan and any Manual-tab
+// per-case agent run) in one press. Idempotent — the server answers 200 with an
+// empty list when nothing is running, so this never throws on a redundant press.
+export async function stopAll() {
+  const res = await fetch('/stop', { method: 'POST' })
+  if (!res.ok) throw new Error(`Stop failed: ${res.status}`)
+  return res.json()
+}

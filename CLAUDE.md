@@ -257,15 +257,19 @@ npm run build      # production build → frontend/dist
 ```
 
 For local dev: run `python server.py` in one terminal and `npm run dev` in another.
-The Vite dev server proxies `/runs`, `/manual`, `/config`, `/reports`, `/cycles`
-and `/testcases` to the backend so there are no CORS issues in
-dev. **Every prefix `server.py` answers must be listed in
+The Vite dev server proxies `/runs`, `/stop`, `/manual`, `/config`, `/settings`,
+`/reports`, `/cycles` and `/testcases` to the backend so there are no CORS
+issues in dev. **Every prefix `server.py` answers must be listed in
 `frontend/vite.config.js`.** An unlisted prefix does not 404 — it falls through
 to Vite's SPA fallback and returns `index.html`, so the caller's `res.json()`
 fails with `Unexpected token '<', "<!doctype "...`. This bites in dev ONLY:
 `/cycles` and `/testcases` shipped with the TR/TC rail browser, were never added
 to the proxy, and the rail read "0 of 0" in dev while working fine in production
-(fixed 2026-08-18).
+(fixed 2026-08-18). **It happened again:** `/settings` was never added when the
+global target-URL and login settings shipped, so both saves silently failed to
+reach the backend in dev until 2026-08-26. The proxy list is now `/runs`,
+`/stop`, `/manual`, `/config`, `/settings`, `/reports`, `/cycles`,
+`/testcases` — check it whenever you add an endpoint.
 
 In production, `server.py` serves the built `frontend/dist` as static files.
 
@@ -557,6 +561,15 @@ FastAPI app. Endpoints (exactly what the frontend calls — see FRONTEND.md):
 - `POST /runs/{id}/report` → generate HTML report, return its path/url.
 - `POST /runs/{id}/log-bugs` → create Jira bugs for failed cases. Gated action —
   only succeeds on a finished run that has failures.
+- `POST /stop` → EMERGENCY STOP. Cancels every not-done task in `TASKS` — the
+  Live-run plan and any Manual-tab per-case agent run — via the same
+  `task.cancel()` the per-run endpoint uses, so per-case `finally` blocks and
+  the manual-mark bookkeeping keep working. Returns
+  `{"cancelled": [run_id, …]}`; idempotent, 200 with `[]` when idle, never 404.
+  Deliberately does NOT close orphaned browsers, clear stranded `running`
+  marks, or latch a re-arm gate (scoped out 2026-08-26): it is a stop, not a
+  safety interlock. A cancelled HEADED full-plan run can leave a Chromium
+  window open.
 - `GET /cycles?q=&start=&limit=` → one page of test runs `{id, key, name}`.
 - `GET /testcases?q=&start=&limit=` → one page of the project's test case library
   `{id, key, name, plan_key}`. Both push `q` down to QMetry and return

@@ -18,8 +18,13 @@ export default defineConfig({
     port: 5173,
     proxy: {
       '/runs': 'http://127.0.0.1:8000',
+      '/stop': 'http://127.0.0.1:8000',
       '/manual': 'http://127.0.0.1:8000',
       '/config': 'http://127.0.0.1:8000',
+      // /settings was missing until 2026-08-26 — the rail's global target-URL
+      // and login saves never reached the backend in dev, exactly the failure
+      // this comment block warns about.
+      '/settings': 'http://127.0.0.1:8000',
       '/reports': 'http://127.0.0.1:8000',
       '/cycles': 'http://127.0.0.1:8000',
       '/testcases': 'http://127.0.0.1:8000',

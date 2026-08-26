@@ -18,6 +18,7 @@ import {
   pushRunToQmetry,
   requestReport,
   startRun,
+  stopAll,
   useRunState,
 } from './hooks/useRunState.js'
 import {
@@ -31,6 +32,8 @@ export default function App() {
   const { state, error } = useRunState(runId)
   const [activeId, setActiveId] = useState(null)
   const [starting, setStarting] = useState(false)
+  const [stopping, setStopping] = useState(false)
+  const [stopMsg, setStopMsg] = useState('')
   const [tab, setTab] = useState('manual') // 'manual' | 'live'
   const [runUser, setRunUser] = useState('')
   const [runPw, setRunPw] = useState('')
@@ -237,7 +240,30 @@ export default function App() {
   // a Manual-tab per-case agent run) is in flight — either could be
   // mid-navigation, or mid-login, against the values they name.
   const manualAgentRunning = manualState?.cases?.some((c) => c.manual.agent_status === 'running')
-  const railSettingsDisabled = isRunning || Boolean(manualAgentRunning)
+  // One concept, two consumers: the rail settings disable while anything is in
+  // flight, and the emergency stop enables on exactly the same condition.
+  const anythingRunning = isRunning || Boolean(manualAgentRunning)
+  const railSettingsDisabled = anythingRunning
+
+  // Emergency stop. Cancels every in-flight run in one press, whichever tab
+  // started it. No optimistic local state: the existing pollers pick up the
+  // cancelled status, so the server's view of what is running stays the only
+  // source of truth.
+  async function handleStopAll() {
+    setStopping(true)
+    setStopMsg('')
+    try {
+      const { cancelled } = await stopAll()
+      const n = cancelled?.length ?? 0
+      setStopMsg(n ? `Stopped ${n} run${n === 1 ? '' : 's'}` : 'Nothing was running')
+      refreshManual?.()
+    } catch (e) {
+      console.error('stopAll failed:', e)
+      setStopMsg('Could not reach the backend')
+    } finally {
+      setStopping(false)
+    }
+  }
 
   async function handleRun() {
     if (!planKey) return
@@ -306,6 +332,10 @@ export default function App() {
         onSaveGlobalCredentials={handleSaveGlobalCredentials}
         savingGlobalCredentials={savingGlobalCredentials}
         globalCredentialsMsg={globalCredentialsMsg}
+        anythingRunning={anythingRunning}
+        onStopAll={handleStopAll}
+        stopping={stopping}
+        stopMsg={stopMsg}
       />
       <main className="stage">
         <nav className="view-tabs" role="tablist" aria-label="Console view">

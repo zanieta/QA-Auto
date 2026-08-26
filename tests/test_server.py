@@ -13,7 +13,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 import server as server_mod
-from agent.run_state import Plan, RunState, TestCase, new_run_state
+from agent.run_state import Plan, RunState, Step, TestCase, new_run_state
 
 
 @pytest.fixture(autouse=True)
@@ -240,6 +240,200 @@ def test_cancel_running_agent_case_marks_cancelled(monkeypatch, tmp_path):
         mark = server_mod.MANUAL.get("TP-45").find_case("A").mark
         assert mark.agent_status is None
         assert "cancelled by tester" in mark.agent_note
+
+    asyncio.run(_scenario())
+
+
+# ----- POST /stop (emergency stop) ----------------------------------------
+
+
+def test_stop_when_nothing_running_returns_empty_list(client):
+    """Idempotent by design: a safety control that errors when you press it
+    with nothing running is not a safety control. 200 + [], never 404."""
+    r = client.post("/stop")
+    assert r.status_code == 200
+    assert r.json() == {"cancelled": []}
+
+
+def test_stop_cancels_every_in_flight_run():
+    """One press reaches BOTH a full-plan run and a manual per-case run.
+
+    Driven on one event loop via asyncio.run for the same reason
+    test_cancel_running_agent_case_marks_cancelled is: the sync TestClient
+    spins a fresh loop per call and cannot cancel tasks created on another.
+    """
+    import asyncio
+
+    async def _scenario():
+        async def _forever():
+            await asyncio.sleep(100)
+
+        a = asyncio.create_task(_forever())
+        b = asyncio.create_task(_forever())
+        server_mod.TASKS["run-aaa"] = a
+        server_mod.TASKS["run-bbb"] = b
+        await asyncio.sleep(0)  # let both reach the sleep
+
+        result = await server_mod.stop_all()
+        assert sorted(result["cancelled"]) == ["run-aaa", "run-bbb"]
+
+        for t in (a, b):
+            with pytest.raises(asyncio.CancelledError):
+                await t
+            assert t.cancelled()
+
+    asyncio.run(_scenario())
+
+
+def test_stop_ignores_already_finished_runs():
+    """A completed run is not 'stopped' -- it must not appear in the report,
+    or the tester is told work was halted that had already finished."""
+    import asyncio
+
+    async def _scenario():
+        async def _noop():
+            return None
+
+        done = asyncio.create_task(_noop())
+        await done
+
+        async def _forever():
+            await asyncio.sleep(100)
+
+        live = asyncio.create_task(_forever())
+        server_mod.TASKS["run-done"] = done
+        server_mod.TASKS["run-live"] = live
+        await asyncio.sleep(0)
+
+        result = await server_mod.stop_all()
+        assert result["cancelled"] == ["run-live"]
+
+        with pytest.raises(asyncio.CancelledError):
+            await live
+
+    asyncio.run(_scenario())
+
+
+def test_stop_marks_a_cancelled_full_plan_run_finished():
+    """A cancelled full-plan run must end terminal AND keep its tape.
+
+    Two bugs this pins down, both found live:
+
+    1. asyncio.CancelledError inherits from BaseException, so the `except
+       Exception` arm in _run_in_background never saw it and state.finish() was
+       never called. The console then read status="running" forever, keeping
+       isRunning true -- the Run button and global rail settings stayed
+       disabled and the tester could not start another run.
+    2. The orchestrator builds and streams its OWN RunState through the
+       on_update callback; the `state` object _run_in_background holds has no
+       cases at all. Publishing that object on cancel blanked the live
+       snapshot, so pressing Stop erased the record of everything that had run.
+
+    So this test streams progress the way the real orchestrator does and then
+    asserts on the HTTP response, not on the server's own state object -- an
+    earlier version of this test hand-added cases to that object, which
+    production never does, and passed while bug 2 was live.
+    """
+    import asyncio
+
+    async def _scenario():
+        state = new_run_state("TP-45", "TP-45")
+        server_mod.RUNS[state.run_id] = state
+        on_update = server_mod._make_on_update(state.run_id)
+
+        class StreamingOrch:
+            """Streams a run the way Orchestrator.run_plan does: through the
+            callback, into a state object of its own making."""
+
+            async def run_plan(self, plan_key, credentials=None, case_credentials=None, target_url=None):
+                own = new_run_state(plan_key, plan_key)
+                own.add_case(TestCase(id="A", name="Case A"))
+                own.add_case(TestCase(id="B", name="Case B"))
+                own.start_run()
+                own.start_case("A")
+                own.add_step("A", Step(action="click Save", detail="clicked"))
+                on_update(own)
+                await asyncio.sleep(100)
+
+        with patch.object(server_mod, "_build_orchestrator", lambda cb, headless=None: StreamingOrch()):
+            task = asyncio.create_task(
+                server_mod._run_in_background(state.run_id, "TP-45", state)
+            )
+            server_mod.TASKS[state.run_id] = task
+            await asyncio.sleep(0)
+            await asyncio.sleep(0)  # let the orchestrator publish its first frame
+
+            assert (await server_mod.stop_all())["cancelled"] == [state.run_id]
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+            snapshot = server_mod.LATEST[state.run_id]
+            assert snapshot["status"] == "done", "run left stuck at 'running' after a stop"
+            by_id = {c["id"]: c for c in snapshot["test_cases"]}
+            assert by_id, "the stop wiped the execution tape"
+            assert by_id["A"]["status"] == "blocked", "the in-flight case kept spinning"
+            assert by_id["B"]["status"] == "queued", "a case that never ran must not claim an outcome"
+            assert len(by_id["A"]["steps"]) == 1, "the streamed step was lost"
+
+    asyncio.run(_scenario())
+
+
+def test_stop_preserves_the_tape_of_a_cancelled_manual_case_run(monkeypatch, tmp_path):
+    """Emergency stop reaches Manual-tab runs too, so it must not wipe them.
+
+    run_single_case builds its own RunState exactly as run_plan does, so
+    _run_agent_case had the same defect: publishing the server's bare state
+    object on cancel discarded every streamed step. Pre-existing (the Manual
+    tab's own Cancel button hit it too), in scope here because POST /stop
+    cancels these runs as well.
+    """
+    import asyncio
+
+    monkeypatch.setattr("agent.manual_state.MANUAL_DIR", tmp_path)
+    server_mod.MANUAL = server_mod.ManualStore()
+    server_mod.MANUAL.build(
+        "TP-45", "TP-45",
+        [{"id": "A", "name": "Case A", "steps": [{"action": "fill email", "expected": "e"}]}],
+        False,
+    )
+
+    async def _scenario():
+        state = new_run_state("TP-45", "TP-45")
+        state.add_case(TestCase(id="A", name="Case A"))
+        server_mod.RUNS[state.run_id] = state
+        on_update = server_mod._make_on_update(state.run_id)
+
+        class StreamingOrch:
+            async def run_single_case(self, case_id, plan_key=None, step_indices=None,
+                                      credentials=None, target_url=None):
+                own = new_run_state(plan_key or "TP-45", "TP-45")
+                own.add_case(TestCase(id=case_id, name="Case A"))
+                own.start_run()
+                own.start_case(case_id)
+                own.add_step(case_id, Step(action="fill email", detail="filled"))
+                own.resolve_step(case_id, 0, "pass", "looks right", 1.0)
+                own.add_step(case_id, Step(action="click Save", detail="clicked"))
+                on_update(own)
+                await asyncio.sleep(100)
+
+        with patch.object(server_mod, "_build_orchestrator", lambda cb, headless=None: StreamingOrch()):
+            task = asyncio.create_task(
+                server_mod._run_agent_case(state.run_id, "TP-45", "A", state, None)
+            )
+            server_mod.TASKS[state.run_id] = task
+            await asyncio.sleep(0)
+            await asyncio.sleep(0)
+
+            assert (await server_mod.stop_all())["cancelled"] == [state.run_id]
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+            snapshot = server_mod.LATEST[state.run_id]
+            assert snapshot["status"] == "done"
+            steps = snapshot["test_cases"][0]["steps"]
+            assert len(steps) == 2, "the stop wiped the streamed steps"
+            assert steps[0]["status"] == "pass", "a settled step must keep its verdict"
+            assert steps[1]["status"] == "blocked", "the interrupted step kept spinning"
 
     asyncio.run(_scenario())
 

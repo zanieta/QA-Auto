@@ -35,6 +35,10 @@ export default function Rail({
   onSaveGlobalCredentials,
   savingGlobalCredentials,
   globalCredentialsMsg,
+  anythingRunning,
+  onStopAll,
+  stopping,
+  stopMsg,
 }) {
   const summary = state?.summary ?? { total: 0, passed: 0, failed: 0, blocked: 0 }
   const cases = state?.test_cases ?? []
@@ -81,6 +85,25 @@ export default function Rail({
         credentialsMsg={globalCredentialsMsg}
         disabled={settingsDisabled}
       />
+
+      {/* Emergency stop. Rendered outside the browse/drilled-in split on
+          purpose so it is in the same place on both tabs and in both states —
+          a brake you have to go looking for is not a brake. Disabled rather
+          than hidden when idle, so its location is learned before it's needed. */}
+      <button
+        type="button"
+        className="rail-stop"
+        onClick={onStopAll}
+        disabled={!anythingRunning || stopping}
+        title={
+          anythingRunning
+            ? 'Cancel every run in progress'
+            : 'Nothing is running'
+        }
+      >
+        {stopping ? 'Stopping…' : '■ Stop everything'}
+      </button>
+      {stopMsg && <div className="rail-stop-msg">{stopMsg}</div>}
 
       {!drilledIn ? (
         <CaseBrowser

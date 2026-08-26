@@ -192,6 +192,60 @@ async def _no_cache_html(request, call_next):
 # ---------------------------------------------------------------- run wiring
 
 
+def _finalize_cancelled_run(run_id: str, state: RunState) -> None:
+    """Mark a cancelled run terminal WITHOUT erasing what it managed to run.
+
+    Subtlety worth keeping: ``Orchestrator.run_plan`` builds its own RunState
+    and streams it through the on_update callback, so ``LATEST[run_id]`` holds
+    the real tape while the ``state`` object the caller passes here has no
+    cases at all. Publishing that empty object — the obvious thing to do — wipes
+    the tester's record of everything that ran before they pressed Stop.
+
+    So patch the live snapshot in place when there is one, and only fall back to
+    the caller's state when nothing was ever published (cancelled before the
+    orchestrator's first frame).
+
+    A case caught mid-flight becomes ``blocked``: its execution really was
+    obstructed, which is what blocked means. Cases that never started stay
+    ``queued`` — run_state must not claim an outcome for work that never
+    happened.
+    """
+    snapshot = LATEST.get(run_id)
+    if snapshot is not None and snapshot.get("test_cases"):
+        for case in snapshot["test_cases"]:
+            if case.get("status") == "running":
+                case["status"] = "blocked"
+            for step in case.get("steps") or []:
+                if step.get("status") == "running":
+                    step["status"] = "blocked"
+        snapshot["status"] = "done"
+        snapshot["summary"] = _recount(snapshot["test_cases"])
+        for q in list(LISTENERS.get(run_id, [])):
+            try:
+                q.put_nowait(snapshot)
+            except asyncio.QueueFull:
+                log.warning("SSE listener queue full for run %s — dropping frame", run_id)
+        return
+
+    for case in state.test_cases:
+        if case.status == "running":
+            state.resolve_case(case.id, "blocked")
+    state.finish()
+    _make_on_update(run_id)(state)
+
+
+def _recount(cases: list[dict]) -> dict:
+    """Re-derive the summary counters after rewriting case statuses in a
+    snapshot dict. Mirrors RunState.summary, which we can't reuse here because
+    the live tape is already serialized JSON, not a RunState."""
+    return {
+        "total": len(cases),
+        "passed": sum(1 for c in cases if c.get("status") == "pass"),
+        "failed": sum(1 for c in cases if c.get("status") == "fail"),
+        "blocked": sum(1 for c in cases if c.get("status") == "blocked"),
+    }
+
+
 def _make_on_update(run_id: str):
     """Return a sync callback that fans state updates out to SSE listeners."""
 
@@ -273,6 +327,15 @@ async def _run_in_background(run_id: str, plan_key: str, state: RunState) -> Non
             target_url=SETTINGS.get("target_url") or None,
         )
         RUNS[run_id] = final
+    except asyncio.CancelledError:
+        # CancelledError inherits from BaseException, NOT Exception, so the arm
+        # below never sees it. Without this the run stayed status="running"
+        # forever after a cancel — which keeps the frontend's isRunning true,
+        # leaving the Run button and the global rail settings disabled so the
+        # tester could not start another run. Same pattern as _run_agent_case.
+        log.info("Run %s cancelled by tester", run_id)
+        _finalize_cancelled_run(run_id, state)
+        raise
     except Exception:
         log.exception("Run %s crashed", run_id)
         # mark blocked so the UI shows something terminal
@@ -359,8 +422,9 @@ async def _run_agent_case(
         )
     except asyncio.CancelledError:
         log.info("Manual agent run %s cancelled by tester", run_id)
-        state.finish()
-        _make_on_update(run_id)(state)
+        # run_single_case builds its own RunState too, so publishing `state`
+        # here discarded every streamed step — see _finalize_cancelled_run.
+        _finalize_cancelled_run(run_id, state)
         when = datetime.now().strftime("%Y-%m-%d %H:%M")
         MANUAL.set_agent(
             plan, case_id, None, run_id,
@@ -536,6 +600,35 @@ async def cancel_run(run_id: str) -> dict:
         raise HTTPException(404, "no cancellable run")
     task.cancel()
     return {"cancelled": True}
+
+
+@app.post("/stop")
+async def stop_all() -> dict:
+    """Emergency stop: cancel EVERY in-flight run, whichever tab started it.
+
+    One press reaches a full-plan Live run and any Manual-tab per-case agent
+    run at once, via the same ``task.cancel()`` the per-run endpoint above
+    uses — so per-case ``finally`` blocks and the manual-mark bookkeeping keep
+    working unchanged.
+
+    Idempotent: 200 with an empty list when nothing is running, never 404. A
+    safety control that errors when you press it twice is not a safety
+    control. Already-finished runs are excluded — reporting them would tell
+    the tester work was halted that had already completed.
+
+    Deliberately does NOT close orphaned browsers or clear stranded manual
+    marks (scoped out 2026-08-26): this is a stop, not a safety interlock. A
+    cancelled HEADED full-plan run can leave a Chromium window open; Manual
+    runs are always headless, so they are unaffected.
+    """
+    cancelled = [run_id for run_id, task in TASKS.items() if not task.done()]
+    for run_id in cancelled:
+        TASKS[run_id].cancel()
+    if cancelled:
+        log.info("Emergency stop: cancelled %d run(s): %s", len(cancelled), ", ".join(cancelled))
+    else:
+        log.info("Emergency stop pressed with nothing running")
+    return {"cancelled": cancelled}
 
 
 @app.post("/runs/{run_id}/push-qmetry")
