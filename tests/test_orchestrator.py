@@ -103,6 +103,132 @@ def _credential_recorder(cases: list[dict]) -> tuple[Orchestrator, list]:
     return orch, seen
 
 
+# ---------- steps that require a logged-out state ---------------------------
+
+
+def test_step_expects_logged_out_matches_login_page_expectations():
+    """TC-2 step 0 is the motivating case: action "Navigate to the Sous Chef
+    Cloud", expected "The Sous Chef Cloud login page will appear"."""
+    from agent.orchestrator import _step_expects_logged_out
+
+    assert _step_expects_logged_out(
+        "Navigate to the Sous Chef Cloud. In the address bar, type the URL",
+        "The Sous Chef Cloud login page will appear.",
+    )
+    assert _step_expects_logged_out("Open the app", "The sign-in page is displayed")
+    assert _step_expects_logged_out("Go to the site", "The log in page appears")
+    assert _step_expects_logged_out("Sign out", "The login screen is shown")
+
+
+def test_step_expects_logged_out_ignores_ordinary_steps():
+    """Must not fire on steps that merely happen to mention logging in, or the
+    harness would log out mid-case and destroy the session every time."""
+    from agent.orchestrator import _step_expects_logged_out
+
+    assert not _step_expects_logged_out("Verify the sidebar menus", "The menus are shown")
+    assert not _step_expects_logged_out(
+        "Log in to the Sous Chef Cloud website as an Admin user",
+        "The user is successfully authenticated and redirected to the landing page",
+    )
+    assert not _step_expects_logged_out("Click Save", "The record is saved")
+
+
+@pytest.mark.asyncio
+async def test_live_step_logs_out_before_a_step_that_needs_a_logged_out_state():
+    """_execute_case pre-authenticates every case, so a step expecting the
+    login page can never pass: /login redirects to the landing page. The
+    translator prompt's RECONCILE rule is meant to emit `logout` here and did
+    not (2026-08-27 live run), so the harness does it deterministically.
+    """
+    cases = [{"id": "A", "name": "Alpha", "steps": [
+        {"action": "Navigate to the Sous Chef Cloud",
+         "expected": "The Sous Chef Cloud login page will appear."},
+    ]}]
+    azure = _fake_azure(
+        translate_side_effect=[[]],  # goal already met once logged out
+        evaluate_side_effect=[{"status": "pass", "reason": "Login page shown"}],
+    )
+    browser = _fake_browser()
+    orch = Orchestrator(
+        azure=azure,
+        browser_factory=lambda: browser,
+        case_source=FakeCaseSource({"key": "X", "name": "x"}, cases),
+        on_update=lambda s: None,
+    )
+    with patch("agent.orchestrator.login", new=AsyncMock()):
+        await orch.run_single_case("A")
+
+    performed = [c.args[0] for c in browser.execute_action.await_args_list]
+    assert {"action": "logout"} in performed, "harness did not clear the session"
+
+
+@pytest.mark.asyncio
+async def test_live_step_does_not_log_out_for_an_ordinary_step():
+    cases = [{"id": "A", "name": "Alpha", "steps": [
+        {"action": "Verify the sidebar menus", "expected": "The menus are shown"},
+    ]}]
+    azure = _fake_azure(
+        translate_side_effect=[_ok_actions()],
+        evaluate_side_effect=[{"status": "pass", "reason": "Shown"}],
+    )
+    browser = _fake_browser()
+    orch = Orchestrator(
+        azure=azure,
+        browser_factory=lambda: browser,
+        case_source=FakeCaseSource({"key": "X", "name": "x"}, cases),
+        on_update=lambda s: None,
+    )
+    with patch("agent.orchestrator.login", new=AsyncMock()):
+        await orch.run_single_case("A")
+
+    performed = [c.args[0] for c in browser.execute_action.await_args_list]
+    assert {"action": "logout"} not in performed
+
+
+@pytest.mark.asyncio
+async def test_dry_run_never_tries_to_log_out():
+    """Dry run has no browser at all."""
+    cases = [{"id": "A", "name": "Alpha", "steps": [
+        {"action": "Navigate to the Sous Chef Cloud",
+         "expected": "The login page will appear."},
+    ]}]
+    orch = Orchestrator(
+        azure=_fake_azure(),
+        browser_factory=_fake_browser,
+        case_source=FakeCaseSource({"key": "X", "name": "x"}, cases),
+        on_update=lambda s: None,
+    )
+    state = await orch.run_single_case("A", dry_run=True)
+    assert state.status == "done"
+
+
+@pytest.mark.asyncio
+async def test_a_failed_logout_blocks_the_step_instead_of_crashing_the_case():
+    """If the session cannot be cleared the step is not verifiable, but one
+    bad step must never take the whole case down with an exception."""
+    cases = [{"id": "A", "name": "Alpha", "steps": [
+        {"action": "Navigate to the Sous Chef Cloud",
+         "expected": "The login page will appear."},
+    ]}]
+    azure = _fake_azure(
+        translate_side_effect=[[]],
+        evaluate_side_effect=[{"status": "pass", "reason": "n/a"}],
+    )
+    browser = _fake_browser()
+    browser.execute_action = AsyncMock(side_effect=BrowserError("logout: login page never appeared"))
+    orch = Orchestrator(
+        azure=azure,
+        browser_factory=lambda: browser,
+        case_source=FakeCaseSource({"key": "X", "name": "x"}, cases),
+        on_update=lambda s: None,
+    )
+    with patch("agent.orchestrator.login", new=AsyncMock()):
+        state = await orch.run_single_case("A")
+
+    assert state.test_cases[0].steps[0].status in ("fail", "blocked")
+    assert state.status == "done"
+
+
 # ---------- RUN_MODE=stop_on_fail -------------------------------------------
 
 

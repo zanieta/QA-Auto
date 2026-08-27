@@ -79,6 +79,61 @@ _PAGE_DATA_HEADER_CURRENT = (
 )
 
 
+# Phrases that mean a step can only be judged from a LOGGED-OUT state.
+# `_execute_case` authenticates every case before its first step (so the many
+# cases that assume a session work at all), which makes any step expecting the
+# login page unpassable: the app redirects an authenticated /login straight to
+# the landing page. TC-2 step 0 is the motivating case — action "Navigate to
+# the Sous Chef Cloud", expected "The Sous Chef Cloud login page will appear"
+# — and it failed on every run, which under RUN_MODE=stop_on_fail ended the
+# whole cycle at case 1.
+#
+# `prompts/step_translator.txt` has a RECONCILE-FIRST rule meant to handle
+# this by emitting {"action": "logout"}, and in a live run it did not fire —
+# the translator chose `navigate`, which does not clear the session. Doing it
+# in the harness instead is deterministic: no model variance on whether the
+# session gets cleared, and no edit to a prompt that has no offline harness.
+#
+# Matched against the step's expected result AND action text, so extend this
+# tuple as new phrasings turn up in QMetry rather than loosening the matching.
+_LOGGED_OUT_PHRASES = (
+    "login page",
+    "log in page",
+    "log-in page",
+    "sign in page",
+    "sign-in page",
+    "signin page",
+    "login screen",
+    "sign in screen",
+    "sign-in screen",
+    "logon page",
+)
+
+# Phrases that mean the step is about performing a login, not about SEEING the
+# login page. Without this, "Log in ... the user is authenticated and lands on
+# the login page redirect" style wording would clear a session mid-case.
+_LOGGED_OUT_EXCLUSIONS = (
+    "successfully authenticated",
+    "is authenticated",
+    "redirects the user",
+    "landing page",
+)
+
+
+def _step_expects_logged_out(action_text: str, expected: str) -> bool:
+    """True if this step can only be judged from a logged-out state.
+
+    Deliberately narrow: it fires on a step that expects the login page to be
+    SHOWN, not on one that merely mentions logging in. A false positive here
+    destroys a live session mid-case, which is far more damaging than a false
+    negative (which just leaves today's behaviour).
+    """
+    haystack = f"{action_text} {expected}".lower()
+    if any(x in haystack for x in _LOGGED_OUT_EXCLUSIONS):
+        return False
+    return any(p in haystack for p in _LOGGED_OUT_PHRASES)
+
+
 def _page_data_header_remembered(url: str) -> str:
     """Header for a PAGE DATA block built from a table seen earlier in the
     case rather than the current page — the model must know the values are
@@ -704,6 +759,27 @@ class Orchestrator:
         # exactly as before.
         needs_page_data = _step_needs_existing_data(action_text, expected)
         page_data_block: str | None = None
+
+        # A step that expects the LOGIN PAGE cannot be judged while the
+        # per-case pre-login is still in effect, so clear the session first.
+        # `_logout` is deterministic from any page state (clears cookies, goes
+        # to base_url, waits for the login form), so this is safe even if the
+        # session is already gone — no "am I logged in?" detection needed.
+        # Runs per ATTEMPT, which is right: a retry of such a step should also
+        # start from a logged-out page.
+        if _step_expects_logged_out(action_text, expected):
+            log.info(
+                "Step %d of %s expects a logged-out state — clearing the session",
+                orig_index + 1, case_id,
+            )
+            try:
+                await browser.execute_action({"action": "logout"})
+            except BrowserError as e:
+                # The step is not verifiable without a clean session, but a
+                # failed logout must not raise out of here: `_execute_step`
+                # owns retry/escalation and one bad step never kills a case.
+                log.warning("Could not clear the session for %s: %s", case_id, e)
+                return "blocked", f"Could not reach a logged-out state: {e}", None, False
         # Every element seen across THIS attempt's snapshots, so an action from
         # an earlier act->observe round is still named later on. The loop
         # re-snapshots each round and refs are per-snapshot, so the current
