@@ -163,7 +163,33 @@ HEADLESS=true                   # applies to FULL PLAN runs (Live run tab + CLI)
                                 # case, use main.py --testcase with HEADLESS=false.
 SCREENSHOT_ON_PASS=false
 AUTO_CREATE_BUGS=false          # START false; enable only after a verified run
-RUN_MODE=continue               # continue | stop_on_fail
+RUN_MODE=stop_on_fail           # continue | stop_on_fail — IMPLEMENTED
+                                # 2026-08-27 (documented since day one and
+                                # wired nowhere until then).
+                                #   continue     — a fail/blocked step records
+                                #     and the case carries on; every case in
+                                #     the plan runs (the 2026-07-07 rule,
+                                #     outcome fail > blocked > pass).
+                                #   stop_on_fail — the FIRST step resolving
+                                #     fail OR blocked ends its case at once and
+                                #     no later case starts; the case takes that
+                                #     step's own status (a blocked step gives a
+                                #     BLOCKED case, so QMetry records an
+                                #     obstruction, not an app defect), and
+                                #     unstarted cases stay `queued` rather than
+                                #     gaining a "skipped" status that would
+                                #     change the CaseStatus contract. Covers a
+                                #     rejected login for free: login() raises
+                                #     BrowserError, which lands as a non-pass
+                                #     step. An unrecognised value falls back to
+                                #     `continue` — a typo must not silently
+                                #     abandon a 73-case sweep. No UI toggle by
+                                #     design; this env var is the only control.
+                                #     TRADE-OFF, accepted knowingly: one flaky
+                                #     step now ends a whole cycle, so an
+                                #     unattended sweep cannot be relied on to
+                                #     complete. `continue` is the one-line
+                                #     revert.
 LOG_LEVEL=INFO
 AGENT_LAUNCH_DELAY_S=3          # pause before a case's first action so a human
                                 # watching a visible window can follow along;

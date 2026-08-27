@@ -103,6 +103,136 @@ def _credential_recorder(cases: list[dict]) -> tuple[Orchestrator, list]:
     return orch, seen
 
 
+# ---------- RUN_MODE=stop_on_fail -------------------------------------------
+
+
+def _stepwise_orch(cases: list[dict], verdicts: dict[str, list[str]], **kw):
+    """Orchestrator whose _execute_step returns canned verdicts per case, and
+    records which (case, tape_index) pairs actually ran."""
+    ran: list[tuple[str, int]] = []
+    orch = Orchestrator(
+        azure=_fake_azure(),
+        browser_factory=_fake_browser,
+        case_source=FakeCaseSource({"key": "X", "name": "x"}, cases),
+        on_update=lambda s: None,
+        **kw,
+    )
+
+    async def _fake_step(state, case_id, tape_index, step, browser, dry_run=False,
+                         case_context="", orig_index=None, table_memory=None):
+        ran.append((case_id, tape_index))
+        seq = verdicts.get(case_id, ["pass"])
+        return seq[tape_index] if tape_index < len(seq) else seq[-1]
+
+    orch._execute_step = _fake_step
+    return orch, ran
+
+
+def _two_cases_two_steps() -> list[dict]:
+    step = {"action": "go", "expected": "ok"}
+    return [
+        {"id": "A", "name": "Alpha", "steps": [step, step]},
+        {"id": "B", "name": "Bravo", "steps": [step, step]},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_stop_on_fail_abandons_the_rest_of_the_run():
+    """RUN_MODE has been documented since day one and implemented nowhere.
+    Under stop_on_fail the FIRST failing step ends everything: its own case
+    stops, and no later case starts."""
+    orch, ran = _stepwise_orch(
+        _two_cases_two_steps(), {"A": ["fail", "pass"]}, run_mode="stop_on_fail"
+    )
+    state = await orch.run_plan("X")
+
+    assert ran == [("A", 0)], "steps ran after the stopping step"
+    assert state.status == "done"
+
+
+@pytest.mark.asyncio
+async def test_stop_on_fail_also_stops_on_blocked():
+    """Decided 2026-08-26: blocked stops the run too. A bad login raises
+    BrowserError and lands as a non-pass step, so this is what makes an
+    unusable session stop the run instead of failing 73 cases identically."""
+    orch, ran = _stepwise_orch(
+        _two_cases_two_steps(), {"A": ["blocked", "pass"]}, run_mode="stop_on_fail"
+    )
+    await orch.run_plan("X")
+    assert ran == [("A", 0)]
+
+
+@pytest.mark.asyncio
+async def test_stop_on_fail_case_keeps_the_stopping_steps_own_status():
+    """A blocked step yields a BLOCKED case, not a FAIL one. QMetry has a
+    distinct Blocked result for exactly this, and mislabelling it as Fail
+    would make an expired session read as an application defect."""
+    orch, _ = _stepwise_orch(
+        _two_cases_two_steps(), {"A": ["blocked"]}, run_mode="stop_on_fail"
+    )
+    state = await orch.run_plan("X")
+    assert state.test_cases[0].status == "blocked"
+
+    orch2, _ = _stepwise_orch(
+        _two_cases_two_steps(), {"A": ["fail"]}, run_mode="stop_on_fail"
+    )
+    state2 = await orch2.run_plan("X")
+    assert state2.test_cases[0].status == "fail"
+
+
+@pytest.mark.asyncio
+async def test_stop_on_fail_leaves_unstarted_cases_queued():
+    """run_state must not claim an outcome for work that never happened."""
+    orch, _ = _stepwise_orch(
+        _two_cases_two_steps(), {"A": ["fail"]}, run_mode="stop_on_fail"
+    )
+    state = await orch.run_plan("X")
+    assert [c.status for c in state.test_cases] == ["fail", "queued"]
+
+
+@pytest.mark.asyncio
+async def test_stop_on_fail_runs_everything_when_all_steps_pass():
+    """The stop must be triggered by a verdict, not by the mode being on."""
+    orch, ran = _stepwise_orch(
+        _two_cases_two_steps(), {}, run_mode="stop_on_fail"
+    )
+    state = await orch.run_plan("X")
+    assert ran == [("A", 0), ("A", 1), ("B", 0), ("B", 1)]
+    assert [c.status for c in state.test_cases] == ["pass", "pass"]
+
+
+@pytest.mark.asyncio
+async def test_continue_mode_preserves_todays_behaviour():
+    """The 2026-07-07 decision (cases continue past failed steps, outcome
+    fail > blocked > pass) is retained under RUN_MODE=continue, which is what
+    makes stop_on_fail a flag rather than a rewrite."""
+    orch, ran = _stepwise_orch(
+        _two_cases_two_steps(), {"A": ["fail", "pass"]}, run_mode="continue"
+    )
+    state = await orch.run_plan("X")
+    assert ran == [("A", 0), ("A", 1), ("B", 0), ("B", 1)]
+    assert [c.status for c in state.test_cases] == ["fail", "pass"]
+
+
+@pytest.mark.asyncio
+async def test_stop_on_fail_default_comes_from_the_environment(monkeypatch):
+    monkeypatch.setenv("RUN_MODE", "stop_on_fail")
+    orch, ran = _stepwise_orch(_two_cases_two_steps(), {"A": ["fail"]})
+    await orch.run_plan("X")
+    assert ran == [("A", 0)]
+
+
+@pytest.mark.asyncio
+async def test_run_single_case_is_unaffected_by_stop_on_fail():
+    """One case has no subsequent cases to stop; its own steps still stop."""
+    orch, ran = _stepwise_orch(
+        _two_cases_two_steps(), {"A": ["fail", "pass"]}, run_mode="stop_on_fail"
+    )
+    state = await orch.run_single_case("A", plan_key="X")
+    assert state.status == "done"
+    assert ran == [("A", 0)]
+
+
 # ---------- case selection (Live-run tickboxes) -----------------------------
 
 

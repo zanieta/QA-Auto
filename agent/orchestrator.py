@@ -142,6 +142,7 @@ class Orchestrator:
         step_attempts: int | None = None,
         launch_delay_s: float | None = None,
         eval_max_frames: int | None = None,
+        run_mode: str | None = None,
     ):
         self.azure = azure or AzureAIClient()
         self.browser_factory = browser_factory or BrowserSession
@@ -177,6 +178,24 @@ class Orchestrator:
             else int(os.environ.get("EVAL_MAX_FRAMES", "8"))
         )
         self.eval_max_frames = max(1, raw_frames)
+        # RUN_MODE: "continue" (default) | "stop_on_fail". Documented since the
+        # project started and implemented nowhere until 2026-08-27.
+        #   continue     — a fail/blocked step records and the case carries on;
+        #                  every case in the plan runs (the 2026-07-07 rule,
+        #                  outcome fail > blocked > pass).
+        #   stop_on_fail — the FIRST step resolving fail OR blocked ends its
+        #                  case immediately and no later case starts. Both
+        #                  non-pass statuses stop the run: a rejected login
+        #                  raises BrowserError and lands as a non-pass step,
+        #                  and continuing past an unusable session would fail
+        #                  every remaining case identically for one cause.
+        # Anything unrecognised falls back to "continue" — the safe direction,
+        # since a typo must not silently abandon a 73-case sweep.
+        mode = (run_mode or os.environ.get("RUN_MODE") or "continue").strip().lower()
+        if mode not in ("continue", "stop_on_fail"):
+            log.warning("Unknown RUN_MODE %r — falling back to 'continue'", mode)
+            mode = "continue"
+        self.run_mode = mode
 
     # ------------------------------------------------------------------ public
 
@@ -276,7 +295,7 @@ class Orchestrator:
                 # deliberately left the field blank ("nothing typed"), and
                 # falls through to the run-level pair, then to the .env
                 # account — the same rule the docstring above describes.
-                await self._execute_case(
+                stop_run = await self._execute_case(
                     state, case,
                     credentials=per_case.get(case["id"]) or credentials,
                     target_url=target_url,
@@ -285,6 +304,18 @@ class Orchestrator:
                 log.exception("Case %s crashed; marking blocked", case.get("id"))
                 state.resolve_case(case["id"], "blocked")
                 self.on_update(state)
+            else:
+                if stop_run:
+                    # Remaining cases are left `queued`, never marked skipped:
+                    # run_state must not claim an outcome for work that never
+                    # happened, and a new CaseStatus value would be a contract
+                    # change across FRONTEND.md, the fixtures and the frontend.
+                    remaining = len(cases) - cases.index(case) - 1
+                    log.warning(
+                        "Run of plan %s stopped early; %d case(s) left unrun",
+                        plan_key, remaining,
+                    )
+                    break
 
         state.finish()
         self.on_update(state)
@@ -360,7 +391,13 @@ class Orchestrator:
         step_indices: list[int] | None = None,
         credentials: tuple[str, str] | None = None,
         target_url: str | None = None,
-    ) -> None:
+    ) -> bool:
+        """Run one case. Returns True when the run should STOP here.
+
+        The stop signal is a return value, not an exception: `run_plan` wraps
+        this call in `except Exception` so one bad case never kills the run, so
+        a sentinel exception would be swallowed there and logged as a crash.
+        """
         case_id = case["id"]
         state.start_case(case_id)
         self.on_update(state)
@@ -432,6 +469,7 @@ class Orchestrator:
         table_memory = _TableMemory()
 
         outcome: str = "pass"
+        stop_run = False
         try:
             # tape_index (position in the executed sequence) is what resolve_step
             # indexes — NOT the original step number, which differs when filtering.
@@ -449,6 +487,20 @@ class Orchestrator:
                     outcome = "fail"
                 elif step_outcome == "blocked" and outcome != "fail":
                     outcome = "blocked"
+                if self.run_mode == "stop_on_fail" and step_outcome != "pass":
+                    # The case takes THIS step's status, not an aggregate: with
+                    # one non-pass step the fail > blocked > pass precedence has
+                    # nothing else to weigh, and a blocked step must stay
+                    # blocked so QMetry records an obstruction rather than an
+                    # application defect.
+                    outcome = step_outcome
+                    stop_run = True
+                    log.warning(
+                        "RUN_MODE=stop_on_fail: step %d of case %s resolved %s — "
+                        "stopping the run; remaining cases will not start",
+                        tape_index + 1, case_id, step_outcome,
+                    )
+                    break
         finally:
             if browser is not None:
                 try:
@@ -464,6 +516,8 @@ class Orchestrator:
                 await self._create_bug(state, case_id)
             except Exception:
                 log.exception("Failed to create Jira bug for %s", case_id)
+
+        return stop_run
 
     async def _execute_step(
         self,
