@@ -443,3 +443,31 @@ def test_compose_comment_step_marks_with_note_override_and_skip(store):
     assert lines[0] == "Overall broken"
     assert lines[1] == "Step 1: pass — Looked fine (overrode agent: blocked)"
     assert lines[2] == "Step 2: skip"
+
+
+# ----- execution_result passthrough (QMetry status dots) --------------------
+
+
+def test_case_carries_the_qmetry_execution_result():
+    """The rail's Live-tab dot reads this. It reaches the frontend through the
+    manual session because that is also what feeds the Live tab's pre-run
+    preview (App.jsx builds livePreview from manualState) — run_state is
+    deliberately NOT touched, so the frontend contract is unchanged."""
+    store = ManualStore()
+    session = store.build(
+        "TR-1", "TR-1",
+        [{"id": "TC-1", "name": "Alpha", "steps": [],
+          "execution_result": {"name": "Pass", "color": "#14892C"}}],
+        False,
+    )
+    assert session.to_dict()["cases"][0]["execution_result"] == {
+        "name": "Pass", "color": "#14892C"
+    }
+
+
+def test_case_execution_result_is_none_when_absent():
+    store = ManualStore()
+    session = store.build(
+        "TR-1", "TR-1", [{"id": "TC-1", "name": "Alpha", "steps": []}], False,
+    )
+    assert session.to_dict()["cases"][0]["execution_result"] is None

@@ -1095,3 +1095,84 @@ def test_invalidate_case_cache_limited_to_named_cases():
 
 def test_invalidate_case_cache_unknown_plan_is_a_no_op():
     qm.invalidate_case_cache("nope")  # must not raise
+
+
+# ----- executionResult (QMetry status dots) ---------------------------------
+
+
+def test_case_fields_asks_for_execution_result():
+    """`fields` is load-bearing: verified live 2026-08-26 that
+    executionStatus / lastExecutionStatus / testCaseExecutionStatus / status
+    are ALL silently ignored (HTTP 200, field simply absent) and only
+    `executionResult` works. A wrong name here would ship a feature that
+    always reads "not run" and never errors, so pin the name in a test."""
+    assert "executionResult" in qm._CASE_FIELDS
+
+
+@pytest.mark.asyncio
+async def test_list_cases_exposes_execution_result_name_and_colour():
+    """Normalised to {name, colour} at the client boundary: QMetry's object
+    also carries a description and several always-null fields that have no
+    business travelling to the frontend."""
+    client = MagicMock()
+    client.get_test_cycle = AsyncMock(
+        return_value={"id": "cyc1", "key": "TR-1", "summary": "Cycle"}
+    )
+    client.search_test_cases = AsyncMock(return_value=[
+        {
+            "id": "t1", "key": "TC-1", "summary": "Alpha", "versionNo": 1,
+            "testCaseExecutionId": 9001,
+            "executionResult": {
+                "id": 101543, "name": "Pass", "color": "#14892C",
+                "description": "To mark the Test Case ... as 'Pass' ...",
+                "defaultName": None, "seqNo": None, "isDefault": True,
+            },
+        },
+    ])
+    src = QMetryCaseSource(client)
+    cases = await src.list_cases("TR-1", with_steps=False)
+
+    assert cases[0]["execution_result"] == {"name": "Pass", "color": "#14892C"}
+
+
+@pytest.mark.asyncio
+async def test_list_cases_distinguishes_not_executed_from_blocked():
+    """A never-run case comes back as the "Not Executed" RESULT TYPE, not a
+    null — confirmed across 8 cycles (TR-491 is 92/92 Not Executed). Blocked
+    is a different result entirely, so they must not collapse together."""
+    client = MagicMock()
+    client.get_test_cycle = AsyncMock(
+        return_value={"id": "cyc1", "key": "TR-1", "summary": "Cycle"}
+    )
+    client.search_test_cases = AsyncMock(return_value=[
+        {"id": "t1", "key": "TC-1", "summary": "A", "versionNo": 1,
+         "executionResult": {"id": 101542, "name": "Not Executed", "color": "#205081"}},
+        {"id": "t2", "key": "TC-2", "summary": "B", "versionNo": 1,
+         "executionResult": {"id": 101539, "name": "Blocked", "color": "#CCC"}},
+    ])
+    src = QMetryCaseSource(client)
+    cases = await src.list_cases("TR-1", with_steps=False)
+
+    assert cases[0]["execution_result"]["name"] == "Not Executed"
+    assert cases[1]["execution_result"]["name"] == "Blocked"
+
+
+@pytest.mark.asyncio
+async def test_list_cases_tolerates_a_missing_execution_result():
+    """Defensive on purpose: an unknown field name returns no error from
+    QMetry, so absence must degrade to None rather than raise."""
+    client = MagicMock()
+    client.get_test_cycle = AsyncMock(
+        return_value={"id": "cyc1", "key": "TR-1", "summary": "Cycle"}
+    )
+    client.search_test_cases = AsyncMock(return_value=[
+        {"id": "t1", "key": "TC-1", "summary": "A", "versionNo": 1},
+        {"id": "t2", "key": "TC-2", "summary": "B", "versionNo": 1,
+         "executionResult": None},
+        {"id": "t3", "key": "TC-3", "summary": "C", "versionNo": 1,
+         "executionResult": "unexpected string"},
+    ])
+    src = QMetryCaseSource(client)
+    cases = await src.list_cases("TR-1", with_steps=False)
+
+    assert all(c["execution_result"] is None for c in cases)

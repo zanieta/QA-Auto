@@ -373,6 +373,22 @@ QMetry REST API client. **Status: implemented and working against the LIVE API**
     Cycle search also takes `filter.archived: false`. Both return
     `{total, rows, page_size, truncated}`; `page_size` is the raw row count so
     callers page by the server's offset, not by rows kept.
+  - **`executionResult` is the case's last verdict, and only that name works**
+    (2026-08-27). `_CASE_FIELDS` asks for it, so it rides on the cycle
+    case-search response at no extra call. Verified live that
+    `executionStatus`, `lastExecutionStatus`, `testCaseExecutionStatus` and
+    `status` are ALL silently ignored — HTTP 200 with the field simply absent
+    — which is the `fields`-is-load-bearing rule at its most dangerous: a
+    wrong guess ships a feature that always reads "not run" and never errors.
+    `execution_result(entry)` normalises it to `{name, color}` at the client
+    boundary and returns None for anything that is not a dict with a name.
+    The five result types (`GET /projects/{id}/execution-results`): Pass
+    #14892C, Fail #D04437, Blocked #CCC, Work In Progress #F6C342, Not
+    Executed #205081. **A never-run case is the "Not Executed" RESULT TYPE,
+    not a null** — confirmed across 8 cycles (TR-491 is 92/92 Not Executed,
+    TR-492 a 56/36 mix) — so absence and not-executed must not collapse
+    together. Surfaces to the frontend via `agent/manual_state.py`, NOT
+    run_state; see FRONTEND.md "QMetry status dots".
   - **Search is one substring on one field.** No AND, no wildcards, and unknown
     filter keys are *silently ignored* — an `and: [...]` filter happily returns
     the whole project, so never assume a filter worked because it didn't 400.

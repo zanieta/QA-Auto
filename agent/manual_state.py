@@ -106,6 +106,12 @@ class ManualCase:
     # table as "Test Data". [{"name", "value"}]; empty for most cases. Arrives
     # with the steps (same API call), so it's empty until they hydrate.
     test_data: list[dict] = field(default_factory=list)
+    # The case's last QMetry verdict as {name, color}, or None when QMetry
+    # has none (fixture mode) — NOT the same as "Not Executed", which is a
+    # real QMetry result type with its own colour. Read by the rail's Live-tab
+    # status dot; the Manual tab keeps showing the tester's own hand mark
+    # there, which outranks whatever QMetry last recorded.
+    execution_result: dict | None = None
 
     __test__ = False  # not a pytest class
 
@@ -130,6 +136,7 @@ class ManualCase:
                 for p in self.test_data
             ],
             "precondition": self.precondition,
+            "execution_result": self.execution_result,
             "manual": self.mark.to_dict(),
         }
 
@@ -281,6 +288,7 @@ class ManualStore:
                     tc_id=rc.get("_qmetry_tc_id"),
                     version_no=rc.get("_qmetry_version_no", 1),
                     precondition=rc.get("precondition", ""),
+                    execution_result=rc.get("execution_result"),
                     steps_loaded=steps_loaded,
                     test_data=case_test_data,
                 )

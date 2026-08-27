@@ -185,6 +185,10 @@ export default function App() {
               id: c.id,
               name: c.name,
               status: 'queued',
+              // The case's last QMetry verdict, for the rail's status dot.
+              // Rides along on the manual session — no extra request, and
+              // run_state is deliberately untouched.
+              execution_result: c.execution_result ?? null,
               steps: [],
             })),
           }
@@ -248,7 +252,8 @@ export default function App() {
       test_cases: livePreview.test_cases.map((c) => ({
         ...c,
         status: runId ? (ran.get(c.id)?.status ?? 'queued') : c.status,
-      })),
+      })),  // `...c` keeps execution_result, so a case this run did not cover
+            // still shows its QMetry verdict rather than a bare dashed dot.
     }
   }, [livePreview, liveState, state, runId])
 

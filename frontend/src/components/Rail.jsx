@@ -174,7 +174,7 @@ export default function Rail({
                   className={`case-row ${activeId === c.id ? 'active' : ''}`}
                   onClick={() => onSelectCase?.(c.id)}
                 >
-                  <CaseDot status={c.status} />
+                  <CaseDot status={c.status} qmetry={c.execution_result} />
                   <span className="case-row-id">{c.id}</span>
                   <span className="case-row-name">{c.name}</span>
                 </button>
@@ -215,7 +215,35 @@ export default function Rail({
   )
 }
 
-function CaseDot({ status }) {
+// QMetry result name -> {class, symbol}. Mapped by NAME, not by the hex the
+// API returns per case: the colour belongs in the token system, and a QMetry
+// admin's config must not be able to repaint the console. "Not Executed" is
+// absent on purpose — it falls through to the `queued` look (dashed outline),
+// because a never-run case and a not-yet-run case read the same to a tester
+// about to press Run.
+const QMETRY_DOT = {
+  Pass: { cls: 'qm-pass', symbol: '✓' },
+  Fail: { cls: 'qm-fail', symbol: '✕' },
+  Blocked: { cls: 'qm-blocked', symbol: '!' },
+  'Work In Progress': { cls: 'qm-wip', symbol: '·' },
+}
+
+function CaseDot({ status, qmetry }) {
+  // Live run status always wins once a run has touched this case: what is
+  // happening now outranks what QMetry recorded last time. Only a still-queued
+  // case falls back to the QMetry verdict.
+  const qm = status === 'queued' && qmetry ? QMETRY_DOT[qmetry.name] : null
+  if (qm) {
+    return (
+      <span
+        className={`case-dot ${qm.cls}`}
+        aria-label={`QMetry: ${qmetry.name}`}
+        title={`Last QMetry result: ${qmetry.name}`}
+      >
+        {qm.symbol}
+      </span>
+    )
+  }
   const symbol =
     status === 'pass' ? '✓' : status === 'fail' ? '✕' : status === 'blocked' ? '!' : ''
   return (

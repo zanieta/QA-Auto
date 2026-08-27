@@ -24,6 +24,20 @@
   --amber:      #C9881A;
   --amber-soft: #FBF1DC;
 
+  /* QMetry execution results — the values are QMetry's OWN hexes, read from
+     GET /projects/{id}/execution-results, so the console agrees with what a
+     tester sees on the QMetry site. Mapped by result NAME, never by consuming
+     the hex the API returns per case: an inline hex would break the "derive
+     every colour from tokens" rule and would let a QMetry admin's config
+     silently repaint the console. These sit ALONGSIDE the status tokens above
+     rather than replacing them — those serve live run status, a different
+     signal that happens to share a vocabulary. */
+  --qm-pass:    #14892C;
+  --qm-fail:    #D04437;
+  --qm-blocked: #CCCCCC;
+  --qm-wip:     #F6C342;   /* "Work In Progress" — appeared in 0 of 8 cycles
+                              probed, rendered if it ever shows up */
+
   /* Type */
   --font: 'Inter', system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
   --mono: 'DM Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
@@ -322,6 +336,15 @@ button:focus-visible,
   justify-content: center;
   font-size: 8px;
 }
+
+/* QMetry's last verdict for a case, shown on the Live tab BEFORE a run
+   starts. "Not Executed" deliberately has no rule: it falls through to
+   .case-dot.queued (a dashed outline, i.e. clear), because a never-run case
+   and a not-yet-run case are the same thing to a tester about to press Run. */
+.case-dot.qm-pass    { background: var(--qm-pass);    color: var(--white); }
+.case-dot.qm-fail    { background: var(--qm-fail);    color: var(--white); }
+.case-dot.qm-blocked { background: var(--qm-blocked); color: var(--ink); }
+.case-dot.qm-wip     { background: var(--qm-wip);     color: var(--ink); }
 
 .case-dot.queued {
   border: 1px dashed rgba(255, 255, 255, 0.5);

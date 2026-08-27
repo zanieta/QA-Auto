@@ -1,7 +1,7 @@
 {
   "plan": {
     "key": "SOUSCLOUD-TP-45",
-    "name": "Inventory · smoke test"
+    "name": "Inventory \u00b7 smoke test"
   },
   "qmetry_configured": false,
   "standalone": false,
@@ -55,6 +55,10 @@
         "pushed_to_qmetry": false,
         "login_username": "",
         "has_password": false
+      },
+      "execution_result": {
+        "name": "Pass",
+        "color": "#14892C"
       }
     },
     {
@@ -89,6 +93,10 @@
         "pushed_to_qmetry": false,
         "login_username": "",
         "has_password": false
+      },
+      "execution_result": {
+        "name": "Fail",
+        "color": "#D04437"
       }
     },
     {
@@ -121,6 +129,10 @@
         "pushed_to_qmetry": false,
         "login_username": "",
         "has_password": false
+      },
+      "execution_result": {
+        "name": "Not Executed",
+        "color": "#205081"
       }
     }
   ],

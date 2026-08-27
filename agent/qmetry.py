@@ -70,7 +70,12 @@ _CASE_FETCH_CONCURRENCY = 8
 # the fields explicitly — `fields=all` silently omits them (verified live
 # 2026-08-04). Asking for them here is what lets a cycle's case list load in a
 # single call instead of one version-detail call per case.
-_CASE_FIELDS = "key,summary,precondition"
+# `executionResult` is the case's last verdict in this cycle. Verified live
+# 2026-08-26: executionStatus / lastExecutionStatus / testCaseExecutionStatus /
+# status are ALL silently ignored (HTTP 200, field simply absent) and only this
+# name works — so a wrong guess here ships a feature that always reads "not
+# run" and never errors. It rides on the existing case search: no extra call.
+_CASE_FIELDS = "key,summary,precondition,executionResult"
 _CYCLE_FIELDS = "key,summary,description"
 
 # Multi-term catalogue search has to AND terms locally (QMetry's search is a
@@ -157,6 +162,30 @@ def clean_step_text(
     s = re.sub(r"\*([^*\n]+)\*", r"\1", s)  # *bold* → bold
     s = re.sub(r"\n{3,}", "\n\n", s)  # collapse blank runs
     return s.strip()
+
+
+def execution_result(entry: dict[str, Any]) -> dict[str, str] | None:
+    """QMetry's `executionResult` reduced to `{name, color}`, or None.
+
+    Only those two keys travel onward: the raw object also carries a long
+    description and several always-null fields that the frontend has no use
+    for. Anything that is not a dict with a name degrades to None rather than
+    raising — an unknown `fields` name returns no error from QMetry, so this
+    has to survive the field simply not being there.
+
+    The five result types in this project (GET /projects/{id}/execution-results):
+    Pass #14892C, Fail #D04437, Blocked #CCC, Work In Progress #F6C342,
+    Not Executed #205081. A never-run case is the "Not Executed" TYPE, not a
+    null — confirmed across 8 cycles — so callers must not treat absence and
+    not-executed as the same thing.
+    """
+    raw = entry.get("executionResult")
+    if not isinstance(raw, dict):
+        return None
+    name = raw.get("name")
+    if not name:
+        return None
+    return {"name": name, "color": raw.get("color") or ""}
 
 
 def params_map(parameters: list[dict[str, str]]) -> dict[str, str]:
@@ -982,6 +1011,9 @@ class QMetryCaseSource:
                         "id": tc_key,
                         "name": entry.get("summary") or tc_key,
                         "precondition": clean_step_text(entry.get("precondition")),
+                        # The case's last QMetry verdict, for the rail's status
+                        # dot. Free: it rides on this same search response.
+                        "execution_result": execution_result(entry),
                         "steps": [],
                         "test_data": [],
                         "_steps_loaded": False,

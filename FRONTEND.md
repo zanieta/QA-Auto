@@ -278,6 +278,40 @@ backend therefore handles three query shapes; the frontend just sends `?q=`:
   (`queued` for ones the run didn't cover). The tape stays the view of the
   run; the rail stays the view of the plan.
 
+#### QMetry status dots (Live run tab only)
+Before a run starts, each case row's status dot shows that case's **last
+QMetry verdict**, in QMetry's own colours, so the console agrees with what a
+tester sees on the QMetry site:
+
+| QMetry result | dot | token |
+|---|---|---|
+| Pass | green ✓ | `--qm-pass` `#14892C` |
+| Fail | red ✕ | `--qm-fail` `#D04437` |
+| Blocked | grey ! | `--qm-blocked` `#CCCCCC` |
+| Work In Progress | amber · | `--qm-wip` `#F6C342` |
+| Not Executed | *falls through to the `queued` look* (dashed outline) | — |
+
+Mapped by result **name**, never by the hex the API returns per case: an
+inline hex would break the "derive every colour from tokens" rule, and would
+let a QMetry admin's config silently repaint the console. "Not Executed" has
+no rule of its own because a never-run case and a not-yet-run case read the
+same to a tester about to press Run.
+
+**Live run status always wins** once a run has touched a case — what is
+happening now outranks what QMetry recorded last time. Only a case still
+`queued` falls back to the QMetry verdict, which means a case the run did not
+cover keeps showing its QMetry result rather than a bare dashed dot.
+
+**Not on the Manual tab.** That dot already shows the tester's own hand mark,
+which outranks whatever QMetry last recorded; overwriting it would hide the
+mark the tester just made.
+
+Carried on each case in the manual session state as
+`execution_result: {name, color} | null` — `null` only when QMetry has no
+result at all (fixture mode), which is NOT the same as "Not Executed".
+**`run_state` is unchanged**: the field reaches the Live tab through the
+manual session, which is also what feeds that tab's pre-run preview.
+
 #### Emergency stop (`.rail-stop`)
 A danger-styled full-width button in the rail, directly below the global rail
 settings. Rendered in **both** rail states (browse and drilled-in) and on
@@ -584,6 +618,11 @@ local, nothing is written to QMetry." Marking and agent runs work normally.
 
 The QMetry execution id used to write results back is server-side only and never
 appears in this payload.
+
+Each case in `GET /manual/{plan}` also carries
+`execution_result: {name, color} | null` — the case's last QMetry verdict, for
+the Live tab's status dots (see "QMetry status dots" above). It rides on the
+existing cycle case-search response, so it costs no extra QMetry call.
 
 ### Endpoints the Manual tab calls
 - `GET  /config` → `{ "default_cycle": "<idOrKey>" | null, "default_url": "https://test.souscheftech.com/login", "target_url": "", "login_username": "", "has_password": false }`.
