@@ -103,6 +103,77 @@ def _credential_recorder(cases: list[dict]) -> tuple[Orchestrator, list]:
     return orch, seen
 
 
+# ---------- case selection (Live-run tickboxes) -----------------------------
+
+
+def _case_recorder(cases: list[dict]) -> tuple[Orchestrator, list]:
+    """Orchestrator whose _execute_case only records which cases it was given."""
+    seen: list[str] = []
+    orch = Orchestrator(
+        azure=_fake_azure(),
+        browser_factory=_fake_browser,
+        case_source=FakeCaseSource({"key": "X", "name": "x"}, cases),
+        on_update=lambda s: None,
+    )
+
+    async def _fake(state, case, dry_run=False, step_indices=None, credentials=None, target_url=None):
+        seen.append(case["id"])
+        state.resolve_case(case["id"], "pass")
+
+    orch._execute_case = _fake
+    return orch, seen
+
+
+_THREE = [
+    {"id": "A", "name": "Alpha", "steps": [{"action": "go", "expected": "ok"}]},
+    {"id": "B", "name": "Bravo", "steps": [{"action": "go", "expected": "ok"}]},
+    {"id": "C", "name": "Charlie", "steps": [{"action": "go", "expected": "ok"}]},
+]
+
+
+@pytest.mark.asyncio
+async def test_run_plan_runs_only_the_selected_cases():
+    orch, seen = _case_recorder(_THREE)
+    state = await orch.run_plan("X", case_ids=["A", "C"])
+    assert seen == ["A", "C"]
+
+
+@pytest.mark.asyncio
+async def test_run_plan_excludes_unselected_cases_from_run_state():
+    """Unselected cases are absent from run_state entirely rather than carrying
+    a "skipped" status -- that would mean a new CaseStatus value and a
+    run_state contract change. Excluding also keeps summary.total honest: the
+    counters describe the run that actually happened."""
+    orch, _ = _case_recorder(_THREE)
+    state = await orch.run_plan("X", case_ids=["A", "C"])
+    assert [c.id for c in state.test_cases] == ["A", "C"]
+    assert state.summary["total"] == 2
+
+
+@pytest.mark.asyncio
+async def test_run_plan_without_case_ids_runs_every_case():
+    orch, seen = _case_recorder(_THREE)
+    await orch.run_plan("X")
+    assert seen == ["A", "B", "C"]
+
+
+@pytest.mark.asyncio
+async def test_run_plan_ignores_unknown_case_ids():
+    """A stale frontend selection must not fail the run."""
+    orch, seen = _case_recorder(_THREE)
+    await orch.run_plan("X", case_ids=["A", "GONE"])
+    assert seen == ["A"]
+
+
+@pytest.mark.asyncio
+async def test_run_plan_keeps_plan_order_not_selection_order():
+    """Cases run in the plan's order regardless of how the tester ticked them,
+    so the tape reads the same way every time."""
+    orch, seen = _case_recorder(_THREE)
+    await orch.run_plan("X", case_ids=["C", "A"])
+    assert seen == ["A", "C"]
+
+
 # ---------- happy path ------------------------------------------------------
 
 

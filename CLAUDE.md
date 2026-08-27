@@ -554,8 +554,16 @@ in a new tab — `file://` navigation from an `http://` page is blocked by Chrom
 
 ### server.py
 FastAPI app. Endpoints (exactly what the frontend calls — see FRONTEND.md):
-- `POST /runs` `{ "plan": "SOUSCLOUD-TP-45" }` → starts a run in a background task,
-  returns `{ "run_id": ... }`.
+- `POST /runs` `{ "plan": "SOUSCLOUD-TP-45", "case_ids": [...] }` → starts a run
+  in a background task, returns `{ "run_id": ... }`. `case_ids` is the Live
+  tab's per-case tickbox selection and is optional: absent/null runs every
+  case (the contract the CLI relies on), an EMPTY list is a 422 rather than a
+  silent no-op run. Forwarded to `Orchestrator.run_plan(case_ids=...)`, which
+  filters the plan's own case list — so cases run in PLAN order whatever order
+  they were ticked, unknown ids are logged and ignored (a stale frontend
+  selection must not fail the run), and unselected cases are absent from
+  run_state entirely rather than gaining a "skipped" status that would change
+  the CaseStatus contract.
 - `GET /runs/{id}` → current run_state JSON.
 - `GET /runs/{id}/stream` → SSE stream of step/status events (Mode B).
 - `POST /runs/{id}/report` → generate HTML report, return its path/url.

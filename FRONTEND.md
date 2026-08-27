@@ -255,6 +255,28 @@ backend therefore handles three query shapes; the frontend just sends `?q=`:
 - **Test case list**: each row = status dot + ID (mono) + name (truncated). Status
   dot states: `queued` (dashed border), `run` (pulsing white dot), `pass` (solid
   green ✓), `fail` (solid red ✕). Active row gets a translucent white background.
+- **Case selection (Live run tab only)**: each row carries a checkbox, **all
+  ticked** when a cycle opens, so pressing Run without touching anything
+  behaves exactly as it did before. The section label shows `3 of 4` with an
+  `All`/`None` toggle; the Run button reads `▶ Run 3 of 4` and disables at
+  zero. Unticked rows dim to 42%.
+
+  The checkbox sits BESIDE the row's `<button>` inside a `.case-row-wrap` flex
+  wrapper, never inside it — a checkbox nested in a button is invalid HTML and
+  breaks both the click target and keyboard focus. The Manual tab renders the
+  same wrapper without a checkbox, so both tabs share the row metrics.
+
+  Checkboxes and the `All`/`None` toggle **disable while anything is running**
+  (same condition as the global rail settings): the set of cases a run covers
+  is fixed when it starts.
+
+  **The rail lists the whole cycle, not the run.** Once a run starts its
+  run_state holds only the *selected* cases, so mirroring it would make a
+  deselected case vanish from the rail with no way to re-tick it — which would
+  break the resume-a-stopped-run workflow the tickboxes exist for. The rail
+  therefore renders the full cycle and overlays each case's run status
+  (`queued` for ones the run didn't cover). The tape stays the view of the
+  run; the rail stays the view of the plan.
 
 #### Emergency stop (`.rail-stop`)
 A danger-styled full-width button in the rail, directly below the global rail
@@ -443,11 +465,17 @@ appends to the tape as events arrive. Use this once Mode A works — it removes 
 poll lag so steps appear the instant the agent resolves them.
 
 ### Endpoints the frontend calls (Mode B / control plane)
-- `POST /runs` body `{ "plan": "SOUSCLOUD-TP-45", "username", "password" }` →
+- `POST /runs` body `{ "plan": "SOUSCLOUD-TP-45", "case_ids", "username", "password" }` →
   starts a run, returns run id. `username`/`password` are optional and only sent
   when both are non-empty (the Live tab's login row); a half-filled pair is
   never sent, and the backend falls back to the `.env` admin account. A case
   with its own login saved on the Manual tab wins over the run-level pair.
+  `case_ids` is the Live tab's per-case selection: **omitted entirely when
+  every case is ticked** (absent means "all", the contract the CLI and any
+  pre-tickbox caller relies on), and an empty array is a `422` rather than a
+  no-op run — silently running nothing looks identical to a broken run.
+  Unselected cases are left OUT of run_state rather than carrying a "skipped"
+  status, so `summary.total` describes the run that actually happened.
 - `GET /runs/{id}` → current run_state JSON (same shape as Mode A).
 - `GET /runs/{id}/stream` → SSE stream of step/status events.
 - `POST /runs/{id}/report` → triggers HTML report generation (the "View report"

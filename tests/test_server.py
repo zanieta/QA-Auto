@@ -244,6 +244,46 @@ def test_cancel_running_agent_case_marks_cancelled(monkeypatch, tmp_path):
     asyncio.run(_scenario())
 
 
+# ----- POST /runs case selection ------------------------------------------
+
+
+def test_post_runs_forwards_selected_case_ids(client):
+    """The tickboxes' whole point: only the chosen cases reach the orchestrator."""
+    seen = {}
+
+    async def _fake(run_id, plan_key, state, case_ids=None):
+        seen["case_ids"] = case_ids
+
+    with patch.object(server_mod, "_run_in_background", new=_fake):
+        r = client.post(
+            "/runs",
+            json={"plan": "TP-45", "case_ids": ["TC-2", "TC-9"]},
+        )
+    assert r.status_code == 200
+    assert seen["case_ids"] == ["TC-2", "TC-9"]
+
+
+def test_post_runs_without_case_ids_runs_everything(client):
+    """Absent means "all" -- preserves the existing contract for the CLI and
+    any caller that predates the tickboxes."""
+    seen = {}
+
+    async def _fake(run_id, plan_key, state, case_ids=None):
+        seen["case_ids"] = case_ids
+
+    with patch.object(server_mod, "_run_in_background", new=_fake):
+        r = client.post("/runs", json={"plan": "TP-45"})
+    assert r.status_code == 200
+    assert seen["case_ids"] is None
+
+
+def test_post_runs_rejects_empty_case_id_list(client):
+    """An empty selection is a 422, not a no-op run. Silently running nothing
+    would be indistinguishable from a broken run."""
+    r = client.post("/runs", json={"plan": "TP-45", "case_ids": []})
+    assert r.status_code == 422
+
+
 # ----- POST /stop (emergency stop) ----------------------------------------
 
 
@@ -345,7 +385,7 @@ def test_stop_marks_a_cancelled_full_plan_run_finished():
             """Streams a run the way Orchestrator.run_plan does: through the
             callback, into a state object of its own making."""
 
-            async def run_plan(self, plan_key, credentials=None, case_credentials=None, target_url=None):
+            async def run_plan(self, plan_key, credentials=None, case_credentials=None, target_url=None, case_ids=None):
                 own = new_run_state(plan_key, plan_key)
                 own.add_case(TestCase(id="A", name="Case A"))
                 own.add_case(TestCase(id="B", name="Case B"))
@@ -994,7 +1034,7 @@ def test_run_in_background_prefers_run_body_credentials_over_global(tmp_path, mo
     captured = {}
 
     class FakeOrch:
-        async def run_plan(self, plan_key, credentials=None, case_credentials=None, target_url=None):
+        async def run_plan(self, plan_key, credentials=None, case_credentials=None, target_url=None, case_ids=None):
             captured["credentials"] = credentials
             return new_run_state(plan_key)
 
@@ -1018,7 +1058,7 @@ def test_run_in_background_falls_back_to_global_credentials(tmp_path, monkeypatc
     captured = {}
 
     class FakeOrch:
-        async def run_plan(self, plan_key, credentials=None, case_credentials=None, target_url=None):
+        async def run_plan(self, plan_key, credentials=None, case_credentials=None, target_url=None, case_ids=None):
             captured["credentials"] = credentials
             return new_run_state(plan_key)
 
@@ -1041,7 +1081,7 @@ def test_run_in_background_credentials_none_when_neither_set(tmp_path, monkeypat
     captured = {}
 
     class FakeOrch:
-        async def run_plan(self, plan_key, credentials=None, case_credentials=None, target_url=None):
+        async def run_plan(self, plan_key, credentials=None, case_credentials=None, target_url=None, case_ids=None):
             captured["credentials"] = credentials
             return new_run_state(plan_key)
 
@@ -1849,7 +1889,7 @@ def test_run_credentials_cleared_when_run_plan_crashes():
     orch.run_plan raises — otherwise a crashed run leaves a credential resident."""
 
     class CrashingOrch:
-        async def run_plan(self, plan_key, credentials=None, case_credentials=None, target_url=None):
+        async def run_plan(self, plan_key, credentials=None, case_credentials=None, target_url=None, case_ids=None):
             raise RuntimeError("boom")
 
     with patch.object(server_mod, "_build_orchestrator", lambda on_update, headless=None: CrashingOrch()):
@@ -1867,7 +1907,7 @@ async def test_run_in_background_forwards_credentials_then_clears_them(monkeypat
     captured = {}
 
     class FakeOrch:
-        async def run_plan(self, plan_key, credentials=None, case_credentials=None, target_url=None):
+        async def run_plan(self, plan_key, credentials=None, case_credentials=None, target_url=None, case_ids=None):
             captured["credentials"] = credentials
             captured["case_credentials"] = case_credentials
             return new_run_state(plan_key)
@@ -1919,7 +1959,7 @@ def test_run_in_background_forwards_global_target_url(tmp_path, monkeypatch):
     captured = {}
 
     class FakeOrch:
-        async def run_plan(self, plan_key, credentials=None, case_credentials=None, target_url=None):
+        async def run_plan(self, plan_key, credentials=None, case_credentials=None, target_url=None, case_ids=None):
             captured["target_url"] = target_url
             return new_run_state(plan_key)
 
@@ -1940,7 +1980,7 @@ def test_run_in_background_forwards_none_when_target_url_unset(tmp_path, monkeyp
     captured = {}
 
     class FakeOrch:
-        async def run_plan(self, plan_key, credentials=None, case_credentials=None, target_url=None):
+        async def run_plan(self, plan_key, credentials=None, case_credentials=None, target_url=None, case_ids=None):
             captured["target_url"] = target_url
             return new_run_state(plan_key)
 

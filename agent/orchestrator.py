@@ -186,8 +186,20 @@ class Orchestrator:
         credentials: tuple[str, str] | None = None,
         case_credentials: dict[str, tuple[str, str]] | None = None,
         target_url: str | None = None,
+        case_ids: list[str] | None = None,
     ) -> RunState:
         """Run an entire plan end-to-end. Returns the final RunState.
+
+        `case_ids` limits the run to those cases (the Live-run tab's per-case
+        tickboxes); None means every case, which is what the CLI and any
+        pre-tickbox caller gets. Unselected cases are left OUT of run_state
+        entirely rather than carrying a "skipped" status — that would mean a
+        new CaseStatus value and a run_state contract change — which also
+        keeps `summary.total` honest: the counters describe the run that
+        actually happened. Order comes from the plan, not from the selection,
+        so the tape reads the same way every time. Ids that aren't in the plan
+        are logged and ignored: a stale frontend selection must not fail the
+        run.
 
         `credentials` is the run-level (username, password) override; a case id
         present in `case_credentials` uses that pair instead. None means the
@@ -226,6 +238,19 @@ class Orchestrator:
             state.finish()
             self.on_update(state)
             raise
+
+        if case_ids is not None:
+            wanted = set(case_ids)
+            unknown = wanted - {c["id"] for c in cases}
+            if unknown:
+                log.warning(
+                    "Ignoring %d selected case id(s) not in plan %s: %s",
+                    len(unknown), plan_key, ", ".join(sorted(unknown)),
+                )
+            # Filter the plan's own list rather than iterating `case_ids`, so
+            # the run keeps the plan's order whatever order they were ticked.
+            cases = [c for c in cases if c["id"] in wanted]
+            log.info("Running %d selected case(s) of plan %s", len(cases), plan_key)
 
         # Pre-populate the rail so the tester can see what's coming. Precondition
         # and case test data ride along from the case list — no extra QMetry call.

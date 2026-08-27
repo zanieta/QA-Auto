@@ -46,12 +46,16 @@ export function useRunState(runId) {
 // Convenience: kicks off a real run. Returns { run_id }.
 // `credentials` is an optional { username, password }; both must be non-empty
 // to be sent at all, otherwise the backend uses the .env admin account.
-export async function startRun(planKey, credentials) {
+export async function startRun(planKey, options) {
   const body = { plan: planKey }
-  if (credentials?.username && credentials?.password) {
-    body.username = credentials.username
-    body.password = credentials.password
+  if (options?.username && options?.password) {
+    body.username = options.username
+    body.password = options.password
   }
+  // Omitted entirely when every case is selected: absent means "all", which is
+  // the contract the CLI and any pre-tickbox caller relies on. The server
+  // rejects an empty array rather than treating it as "all".
+  if (options?.caseIds?.length) body.case_ids = options.caseIds
   const res = await fetch('/runs', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

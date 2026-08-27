@@ -89,6 +89,11 @@ SETTINGS = SettingsStore()
 
 class StartRunBody(BaseModel):
     plan: str
+    # Which cases to run (the Live tab's per-case tickboxes). None/absent means
+    # every case in the plan, preserving the contract for the CLI and any
+    # pre-tickbox caller. An EMPTY list is rejected below rather than treated as
+    # "all": silently running nothing looks identical to a broken run.
+    case_ids: list[str] | None = None
     # Run-level login override. Inbound only: held in memory for the run and
     # never echoed in a response, snapshot, or SSE event. Both blank = .env admin.
     username: str = ""
@@ -311,7 +316,9 @@ def _build_orchestrator(on_update, headless: bool | None = None) -> Orchestrator
     )
 
 
-async def _run_in_background(run_id: str, plan_key: str, state: RunState) -> None:
+async def _run_in_background(
+    run_id: str, plan_key: str, state: RunState, case_ids: list[str] | None = None
+) -> None:
     """Wrap orch.run_plan so exceptions don't crash the task silently."""
     try:
         orch = _build_orchestrator(_make_on_update(run_id))
@@ -325,6 +332,7 @@ async def _run_in_background(run_id: str, plan_key: str, state: RunState) -> Non
             credentials=RUN_CREDENTIALS.get(run_id) or _global_credentials(),
             case_credentials=_manual_case_credentials(plan_key),
             target_url=SETTINGS.get("target_url") or None,
+            case_ids=case_ids,
         )
         RUNS[run_id] = final
     except asyncio.CancelledError:
@@ -559,6 +567,9 @@ async def list_project_testcases(q: str = "", start: int = 0, limit: int = 50) -
 @app.post("/runs")
 async def start_run(body: StartRunBody) -> dict:
     """Kick off a plan run; return its run id so the frontend can subscribe."""
+    if body.case_ids is not None and not body.case_ids:
+        raise HTTPException(422, "Select at least one test case to run")
+
     # Eagerly construct the RunState so the GET endpoint works immediately.
     # The orchestrator will overwrite RUNS[run_id] with its own state when it
     # starts producing updates.
@@ -572,7 +583,9 @@ async def start_run(body: StartRunBody) -> dict:
     if body.username and body.password:
         RUN_CREDENTIALS[state.run_id] = (body.username, body.password)
 
-    task = asyncio.create_task(_run_in_background(state.run_id, body.plan, state))
+    task = asyncio.create_task(
+        _run_in_background(state.run_id, body.plan, state, case_ids=body.case_ids)
+    )
     TASKS[state.run_id] = task
     return {"run_id": state.run_id}
 

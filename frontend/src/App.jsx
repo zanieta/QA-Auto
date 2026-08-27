@@ -34,6 +34,9 @@ export default function App() {
   const [starting, setStarting] = useState(false)
   const [stopping, setStopping] = useState(false)
   const [stopMsg, setStopMsg] = useState('')
+  // Which cases the next Live run covers. All-ticked by default so pressing
+  // Run without touching anything behaves exactly as it did before tickboxes.
+  const [selectedIds, setSelectedIds] = useState(() => new Set())
   const [tab, setTab] = useState('manual') // 'manual' | 'live'
   const [runUser, setRunUser] = useState('')
   const [runPw, setRunPw] = useState('')
@@ -190,6 +193,28 @@ export default function App() {
   )
   const liveState = runId ? state : livePreview ?? state
 
+  // Tick every case whenever a different plan's cases load. Keyed on the plan
+  // AND the id list so switching runs never inherits a stale selection, while
+  // live status updates (which don't change the id list) leave ticks alone.
+  const previewCaseIds = (livePreview?.test_cases ?? []).map((c) => c.id).join('|')
+  useEffect(() => {
+    const ids = (livePreview?.test_cases ?? []).map((c) => c.id)
+    if (ids.length) setSelectedIds(new Set(ids))
+  }, [previewCaseIds])
+
+  function toggleCase(id) {
+    setSelectedIds((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
+
+  function toggleAllCases(on) {
+    setSelectedIds(on ? new Set((livePreview?.test_cases ?? []).map((c) => c.id)) : new Set())
+  }
+
   // Auto-focus the currently-running case; otherwise keep whatever the
   // tester picked. First time we see cases, default to the first one.
   useEffect(() => {
@@ -208,6 +233,25 @@ export default function App() {
 
   // The rail mirrors whichever view is active: the QMetry cycle on the Manual
   // tab, the live run on the Live tab.
+  // On the Live tab the rail lists the WHOLE cycle and overlays the statuses of
+  // whichever cases the run covered. It cannot just mirror liveState: once a
+  // run starts, that holds only the SELECTED cases, so a deselected case would
+  // vanish from the rail and could never be re-ticked — which would break the
+  // resume-a-stopped-run workflow the tickboxes exist for. The tape stays the
+  // view of the run; the rail stays the view of the plan.
+  const liveRailState = useMemo(() => {
+    if (!livePreview) return liveState
+    const ran = new Map((state?.test_cases ?? []).map((c) => [c.id, c]))
+    return {
+      plan: liveState?.plan ?? livePreview.plan,
+      summary: liveState?.summary ?? livePreview.summary,
+      test_cases: livePreview.test_cases.map((c) => ({
+        ...c,
+        status: runId ? (ran.get(c.id)?.status ?? 'queued') : c.status,
+      })),
+    }
+  }, [livePreview, liveState, state, runId])
+
   const railState =
     tab === 'manual'
       ? manualState && {
@@ -219,7 +263,7 @@ export default function App() {
             status: c.manual.status === 'unmarked' ? 'queued' : c.manual.status,
           })),
         }
-      : liveState
+      : liveRailState
   const railActiveId = tab === 'manual' ? manualActiveId : activeId
   const railSelect = tab === 'manual' ? setManualActiveId : setActiveId
   // The rail drills into a run's case list; a library case keeps the browser up
@@ -270,7 +314,15 @@ export default function App() {
     setStarting(true)
     try {
       // Run the real QMetry cycle currently shown (?cycle=…), not the fixture plan.
-      const { run_id } = await startRun(planKey, { username: runUser, password: runPw })
+      // Send the selection only when it is a real subset — omitting the field
+      // keeps the "run everything" contract the CLI and older callers rely on.
+      const allCaseIds = (livePreview?.test_cases ?? []).map((c) => c.id)
+      const picked = allCaseIds.filter((id) => selectedIds.has(id))
+      const { run_id } = await startRun(planKey, {
+        username: runUser,
+        password: runPw,
+        caseIds: picked.length && picked.length < allCaseIds.length ? picked : null,
+      })
       setRunId(run_id)
     } catch (e) {
       // Backend not up yet during scaffold — keep showing the fixture and surface the error.
@@ -303,7 +355,16 @@ export default function App() {
     }
   }
 
-  const runLabel = isRunning ? '⏸ Running…' : isDone ? '▶ Run again' : '▶ Run plan'
+  const totalCases = livePreview?.test_cases?.length ?? 0
+  const pickedCount = (livePreview?.test_cases ?? []).filter((c) => selectedIds.has(c.id)).length
+  const partialSelection = totalCases > 0 && pickedCount < totalCases
+  const runLabel = isRunning
+    ? '⏸ Running…'
+    : partialSelection
+      ? `▶ Run ${pickedCount} of ${totalCases}`
+      : isDone
+        ? '▶ Run again'
+        : '▶ Run plan'
 
   return (
     <div className="app">
@@ -336,6 +397,10 @@ export default function App() {
         onStopAll={handleStopAll}
         stopping={stopping}
         stopMsg={stopMsg}
+        selectable={tab === 'live'}
+        selectedIds={selectedIds}
+        onToggleCase={toggleCase}
+        onToggleAll={toggleAllCases}
       />
       <main className="stage">
         <nav className="view-tabs" role="tablist" aria-label="Console view">
@@ -371,8 +436,13 @@ export default function App() {
               <button
                 type="button"
                 className={`btn btn-primary ${isRunning ? 'running' : ''}`}
-                disabled={isRunning || starting}
+                disabled={isRunning || starting || (totalCases > 0 && pickedCount === 0)}
                 onClick={handleRun}
+                title={
+                  totalCases > 0 && pickedCount === 0
+                    ? 'Tick at least one test case in the rail'
+                    : undefined
+                }
               >
                 {runLabel}
               </button>

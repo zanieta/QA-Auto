@@ -39,11 +39,21 @@ export default function Rail({
   onStopAll,
   stopping,
   stopMsg,
+  selectable,
+  selectedIds,
+  onToggleCase,
+  onToggleAll,
 }) {
   const summary = state?.summary ?? { total: 0, passed: 0, failed: 0, blocked: 0 }
   const cases = state?.test_cases ?? []
   const done = summary.passed + summary.failed + (summary.blocked ?? 0)
   const pct = summary.total ? Math.round((done / summary.total) * 100) : 0
+  // Selection is Live-tab only; on the Manual tab `selectable` is false and
+  // none of this renders (that tab has its own per-step agent checkboxes).
+  const selectedCount = selectable
+    ? cases.filter((c) => selectedIds?.has(c.id)).length
+    : 0
+  const allSelected = selectable && cases.length > 0 && selectedCount === cases.length
 
   return (
     <aside className="rail" aria-label="Plan navigation">
@@ -134,24 +144,70 @@ export default function Rail({
             </div>
           </div>
 
-          <div className="rail-section-label">Test cases</div>
+          <div className="rail-section-label">
+            <span>Test cases</span>
+            {selectable && cases.length > 0 && (
+              <span className="rail-select-meta">
+                <span className="mono">
+                  {selectedCount} of {cases.length}
+                </span>
+                <button
+                  type="button"
+                  className="rail-select-all"
+                  onClick={() => onToggleAll?.(!allSelected)}
+                  disabled={anythingRunning}
+                >
+                  {allSelected ? 'None' : 'All'}
+                </button>
+              </span>
+            )}
+          </div>
           <div className="rail-cases" role="list">
             {cases.length === 0 && (
               <div className="browser-msg">Loading test cases…</div>
             )}
-            {cases.map((c) => (
-              <button
-                key={c.id}
-                type="button"
-                role="listitem"
-                className={`case-row ${activeId === c.id ? 'active' : ''}`}
-                onClick={() => onSelectCase?.(c.id)}
-              >
-                <CaseDot status={c.status} />
-                <span className="case-row-id">{c.id}</span>
-                <span className="case-row-name">{c.name}</span>
-              </button>
-            ))}
+            {cases.map((c) => {
+              const picked = !selectable || selectedIds?.has(c.id)
+              const row = (
+                <button
+                  type="button"
+                  className={`case-row ${activeId === c.id ? 'active' : ''}`}
+                  onClick={() => onSelectCase?.(c.id)}
+                >
+                  <CaseDot status={c.status} />
+                  <span className="case-row-id">{c.id}</span>
+                  <span className="case-row-name">{c.name}</span>
+                </button>
+              )
+              // A checkbox cannot nest inside a <button> — invalid HTML that
+              // breaks both the click target and keyboard focus. So when the
+              // list is selectable the row becomes a flex wrapper holding a
+              // real checkbox BESIDE the button, rather than inside it.
+              if (!selectable) {
+                return (
+                  <div key={c.id} role="listitem" className="case-row-wrap">
+                    {row}
+                  </div>
+                )
+              }
+              return (
+                <div
+                  key={c.id}
+                  role="listitem"
+                  className={`case-row-wrap${picked ? '' : ' unpicked'}`}
+                >
+                  <input
+                    type="checkbox"
+                    className="case-pick"
+                    checked={Boolean(picked)}
+                    onChange={() => onToggleCase?.(c.id)}
+                    disabled={anythingRunning}
+                    aria-label={`Run ${c.id}`}
+                  />
+                  {row}
+                </div>
+              )
+            })}
           </div>
         </>
       )}
