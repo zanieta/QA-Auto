@@ -403,17 +403,33 @@ target by `ref`. The orchestrator snapshots before translating and re-snapshots 
 re-translates + retries a step once on a browser action failure (DOM-grounded
 actions — see the 2026-06-30 spec).
 
-**Evaluator model: gpt-4.1 (migrated 2026-08-13, measured).** `gpt-4o` was
+**Evaluator model: gpt-4.1 (migrated 2026-08-13, measured).** `gpt-4o` is
 deprecated in Azure, so `AZURE_AI_EVALUATOR_DEPLOYMENT=gpt-4.1` with the
-**unmodified** `prompts/result_evaluator.txt`. **The gpt-4o revert no longer
-exists** — its deployment was deleted 2026-08-27, which also made
-`AZURE_AI_DEPLOYMENT=gpt-4o` a hard 404 (now `gpt-4.1`; that variable is the
-fallback whenever a per-role override is blank, so a dead value there is a
-landmine that surfaces as a mysterious outage).
+**unmodified** `prompts/result_evaluator.txt`. gpt-4o remains deployed, so the
+revert is one env var.
+
+**Reasoning models (gpt-5.x) are structurally unusable as the EVALUATOR —
+settled 2026-08-27, do not re-litigate.** The gpt-5.6 family (`sol` /
+`terra` / `luna`) was deployed and measured. The disqualifier is not judgment
+quality: **they reject the `temperature` parameter outright** (`Unsupported
+value: 'temperature' does not support 0.1 with this model. Only the default is
+supported`), so `_chat` drops it (`self._no_temperature`) and they run at the
+server default. Their verdicts therefore **cannot be pinned or reproduced** —
+terra measured a 40% flip rate against gpt-4.1's 0%, and luna returned
+`fail 5/5` in one batch and `pass 2/2` in the next. For a role that writes
+PASS/FAIL into QMetry and can file Jira bugs, reproducibility is
+non-negotiable, so this rules out the whole reasoning-model class regardless
+of how well any member judges. Raising `reasoning_effort` to `high` was tried
+and changed nothing (verified in flight: reasoning_tokens 166 default -> 201
+at `high`); that experimental env var has since been removed. Variance is far
+more tolerable in the TRANSLATOR role, where a bad action fails loudly and
+retries — 5.6 remains an untested candidate there, and a fair test needs real
+page snapshots (an A/B on a synthetic snapshot proved nothing).
 
 **THE FALSE-PASS ROOT CAUSE: `_format_detail` erased action targets
-(found + fixed 2026-08-27).** This is the most important entry in this
-section, and it invalidates the two model comparisons below it.
+(found + fixed 2026-08-27).** The most important entry in this section: it
+invalidates the basis on which EVERY evaluator model comparison in this
+project was decided, including the 2026-08-13 gpt-4.1 migration above.
 
 `_format_detail` built its target string from `a.get("selector")` alone. But
 the DOM-grounded contract targets by **`ref`** and leaves `selector` null, so
@@ -474,93 +490,6 @@ PASS/FAIL into QMetry and can file Jira bugs, reproducibility is a hard
 requirement, so this disqualifies them independently of how well they judge.
 Variance is far more tolerable in the TRANSLATOR role (a bad action fails
 loudly and retries), so 5.6 remains a candidate there.
-
-**gpt-5.6-terra REJECTED as evaluator (measured 2026-08-27).** The GPT-5.6
-family (`sol` flagship / `terra` balanced / `luna` cheap-fast, all
-2026-07-09, all vision-capable, 1.05M context) arrived and terra was the
-balanced candidate. On `eval_input_tc2_step4.json`, N=5, unmodified prompt:
-
-| combination | verdicts | flip rate | vs baseline |
-|---|---|---|---|
-| `gpt-4.1` × `result_evaluator.txt` (baseline) | pass 5/5 | 0% | — |
-| `gpt-5.6-terra` × `result_evaluator.txt` | fail 3, blocked 2 | **40%** | 100% |
-
-40% is twice the flip rate that disqualified `result_evaluator_41.txt`. terra's reason strings also varied in how they
-described the screen ("only the Equipment section", "All frames show the same
-Dashboard"). **An earlier version of this note called that self-contradiction;
-that was unfair and is corrected here** - the captured screen genuinely is
-both, with a `> Dashboard` breadcrumb above an `Equipment` panel, so both
-descriptions are defensible. The disqualifying property is unreproducibility,
-whose mechanism is the temperature finding above, not confusion about the
-frames. Nor does this establish that gpt-4.1 is a better judge: on this
-payload BOTH 5.6 models were RIGHT that no navigation occurred and gpt-4.1
-was wrong - because gpt-4.1 was the only one given a starved `performed`
-string, which it filled in optimistically.
-
-**The `reasoning_effort` hypothesis was tested and DISPROVEN (2026-08-27).**
-The obvious explanation — terra judging 8 base64 frames at too low an effort —
-is wrong twice over. First, reasoning models default to `medium`, not low
-(Azure docs), so it was never at minimum. Second, re-running the identical
-comparison with `AZURE_AI_REASONING_EFFORT=high` produced the **identical**
-result: pass 0, fail 3, blocked 2, 40% flip, 100% disagreement. Verified the
-parameter really was in flight rather than silently ignored —
-`completion_tokens_details.reasoning_tokens` moves 166 (default) → 162 (`low`)
-→ 201 (`high`) on terra. So terra's inconsistent multi-frame reading is not
-an effort-budget problem, and there is no known knob that fixes it. Do not
-re-litigate this without new evidence.
-
-**gpt-5.6-luna as translator: inconclusive, not adopted.** Mechanically fine
-(valid JSON, ref-based targeting, temperature auto-handled) but ~2x slower
-than gpt-5.4-mini. A quality A/B was attempted with a SYNTHETIC element
-snapshot that did not contain the steps' real targets, so both models were
-guessing — no conclusion drawn. It did show the two fail differently when a
-target is absent: luna emits `wait` (declines), gpt-5.4-mini fabricates (it
-clicked *Save* when asked for a pencil icon, and filled *Email* with the
-literal string "Description"). A real verdict needs a live run with real
-snapshots.
-
-The migration was decided by measurement, not by reading model cards.
-`scripts/prompt_eval/compare_combinations.py` judges one captured input N times
-per (deployment × prompt file) combination and reports verdict distribution,
-**flip rate** (same input, different verdicts across identical runs — the
-failure mode that disqualified a mini-tier evaluator in 2026-07), disagreement
-vs. a nominated baseline, and the reason strings. Result on
-`eval_input_tc2_step4.json`, N=5:
-
-| combination | verdicts | flip rate | vs baseline |
-|---|---|---|---|
-| `gpt-4o` × `result_evaluator.txt` (baseline) | pass 5/5 | 0% | — |
-| `gpt-4.1` × `result_evaluator.txt` | pass 5/5 | 0% | 0% |
-| `gpt-4.1` × `result_evaluator_41.txt` | pass 4, fail 1 | **20%** | 20% |
-
-**The three-combination design is the point:** the middle row isolates the model
-change from the prompt change. Without it, the third row's regression would have
-been misattributed to gpt-4.1 when it was caused by the prompt edit.
-
-`prompts/result_evaluator_41.txt` is **DISQUALIFIED** and kept only as the
-record of that negative result (it carries a header saying so; a few
-`tests/test_azure_ai.py` cases use it as the override fixture). Its additions —
-explicit rule precedence, bounding the doubt rule — were meant to stop a literal
-instruction-follower over-producing `fail`, and did the opposite: they added
-non-determinism, and the failing run cited insufficient evidence, which that
-file's own precedence block says must route to `blocked`. gpt-4.1 needs no
-prompt changes.
-
-`AZURE_AI_REASONING_EFFORT` (optional, default unset) sends
-`reasoning_effort` on every chat call — `none|minimal|low|medium|high|xhigh|
-max`, supported values vary by model. **Unset means the parameter is not sent
-at all**, so requests stay byte-identical to the measured gpt-4.1
-configuration; this is deliberate, since the evaluator's validated behaviour
-must not shift as a side effect of the setting existing. Non-reasoning
-deployments 400 with "Unrecognized request argument supplied:
-reasoning_effort"; the client drops it and retries, then remembers that
-deployment — the same adaptive pattern as `temperature`, which is what lets
-ONE global setting coexist with a mixed-tier setup (gpt-4.1 evaluator is not
-a reasoning model; gpt-5.4-mini translator is). Reasoning models default to
-`medium` server-side. Note for any future tool-calling work: on gpt-5.6+, a
-Chat Completions request carrying function `tools` fails unless
-`reasoning_effort` is `none` — this project uses `response_format`, not
-tools, so it is unaffected.
 
 `EVALUATOR_PROMPT_FILE` selects the evaluator's prompt file (default
 `result_evaluator.txt`; behaviour unchanged when unset). Any future candidate

@@ -51,7 +51,6 @@ class AzureAIClient:
         translator_deployment: str | None = None,
         evaluator_deployment: str | None = None,
         evaluator_prompt_file: str | None = None,
-        reasoning_effort: str | None = None,
         api_version: str | None = None,
         timeout: float = 60.0,
         max_attempts: int = 3,
@@ -103,23 +102,6 @@ class AzureAIClient:
         # gpt-5.x family only accept the default). Learned at runtime from the
         # first 400, then remembered so later calls skip the failed attempt.
         self._no_temperature: set[str] = set()
-        # Optional `reasoning_effort` (none|minimal|low|medium|high|xhigh|max —
-        # supported values vary by model). Unset means the parameter is not
-        # sent at all, so requests stay byte-identical to the measured gpt-4.1
-        # configuration. Reasoning models default to `medium` server-side;
-        # this exists to push a vision evaluator to `high`/`xhigh`, which is
-        # the lever for the inconsistent multi-frame reads gpt-5.6-terra
-        # showed (40% flip rate, 2026-08-27).
-        self.reasoning_effort = (
-            reasoning_effort
-            or os.environ.get("AZURE_AI_REASONING_EFFORT")
-            or ""
-        ).strip()
-        # Deployments that rejected `reasoning_effort` — non-reasoning models
-        # 400 with "Unrecognized request argument". Learned the same way as
-        # temperature so ONE global setting can't break a mixed-tier setup
-        # (the translator and evaluator are routinely different models).
-        self._no_reasoning_effort: set[str] = set()
 
     @property
     def _chat_url(self) -> str:
@@ -273,8 +255,6 @@ class AzureAIClient:
         body: dict[str, Any] = {"messages": messages}
         if target not in self._no_temperature:
             body["temperature"] = temperature
-        if self.reasoning_effort and target not in self._no_reasoning_effort:
-            body["reasoning_effort"] = self.reasoning_effort
         if response_format is not None:
             body["response_format"] = response_format
 
@@ -308,22 +288,6 @@ class AzureAIClient:
                 log.info("Deployment %s rejects 'temperature' — retrying without it", target)
                 continue
 
-            if (
-                resp.status_code == 400
-                and "reasoning_effort" in resp.text
-                and "reasoning_effort" in body
-            ):
-                # Non-reasoning deployments 400 with "Unrecognized request
-                # argument supplied: reasoning_effort". Same drop-and-remember
-                # as temperature above, so one global setting can't break a
-                # mixed-tier setup — gpt-4.1 is not a reasoning model and is
-                # still the measured evaluator.
-                self._no_reasoning_effort.add(target)
-                body = {k: v for k, v in body.items() if k != "reasoning_effort"}
-                log.info(
-                    "Deployment %s rejects 'reasoning_effort' — retrying without it", target
-                )
-                continue
 
             if resp.status_code >= 400:
                 # 4xx other than 429 — not retryable
