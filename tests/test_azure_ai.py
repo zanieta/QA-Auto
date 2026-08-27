@@ -157,6 +157,46 @@ async def test_reasoning_model_temperature_rejection_is_retried_without_it():
 
 
 @pytest.mark.asyncio
+async def test_reasoning_effort_is_sent_when_configured(monkeypatch):
+    """gpt-5.6 judged 8 frames inconsistently at its default effort (medium);
+    `high`/`xhigh` is the lever for that, so it has to be settable per run
+    without editing code."""
+    monkeypatch.setenv("AZURE_AI_REASONING_EFFORT", "high")
+    ok = _ok('{"status":"pass","reason":"ok"}')
+    client, fake = _client_with([ok])
+    await client.evaluate_result("frame", "Expected X")
+    assert fake.post.call_args.kwargs["json"]["reasoning_effort"] == "high"
+
+
+@pytest.mark.asyncio
+async def test_reasoning_effort_absent_when_unset():
+    """Unset means the request is byte-identical to before this feature —
+    the measured gpt-4.1 configuration must not shift underneath us."""
+    ok = _ok('{"status":"pass","reason":"ok"}')
+    client, fake = _client_with([ok])
+    await client.evaluate_result("frame", "Expected X")
+    assert "reasoning_effort" not in fake.post.call_args.kwargs["json"]
+
+
+@pytest.mark.asyncio
+async def test_reasoning_effort_rejection_is_retried_without_it(monkeypatch):
+    """Non-reasoning deployments 400 on `reasoning_effort` ("Unrecognized
+    request argument"). Same adaptive drop-and-remember as `temperature`, so
+    one global setting can't break a mixed-model setup: the translator and
+    evaluator may be different tiers, and gpt-4.1 is not a reasoning model."""
+    monkeypatch.setenv("AZURE_AI_REASONING_EFFORT", "high")
+    reject = _err(400, '{"error":{"message":"Unrecognized request argument supplied: reasoning_effort"}}')
+    ok = _ok('{"status":"pass","reason":"ok"}')
+    client, fake = _client_with([reject, ok, ok])
+    await client.evaluate_result("frame", "Expected X")
+    assert "reasoning_effort" in fake.post.call_args_list[0].kwargs["json"]
+    assert "reasoning_effort" not in fake.post.call_args_list[1].kwargs["json"]
+    # remembered: the next call never pays the failed attempt again
+    await client.evaluate_result("frame", "Expected X")
+    assert "reasoning_effort" not in fake.post.call_args_list[2].kwargs["json"]
+
+
+@pytest.mark.asyncio
 async def test_translate_and_evaluate_hit_their_own_deployments():
     action = json.dumps([{"action": "click", "selector": "#x", "value": None}])
     evaluation = '{"status":"pass","reason":"ok"}'

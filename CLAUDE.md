@@ -428,9 +428,19 @@ same Dashboard", "frames remain on the Dashboard") on byte-identical input —
 it was reading the 8-frame sequence differently run to run, not merely
 judging it differently. This does NOT establish that gpt-4.1 is *right* (its
 5/5 pass may be lenient on thin evidence); it establishes terra is
-unreproducible, which disqualifies it either way. Untested lead if revisited:
-`_chat` never sends `reasoning_effort`, so terra may be judging 8 base64
-frames at a low default effort.
+unreproducible, which disqualifies it either way.
+
+**The `reasoning_effort` hypothesis was tested and DISPROVEN (2026-08-27).**
+The obvious explanation — terra judging 8 base64 frames at too low an effort —
+is wrong twice over. First, reasoning models default to `medium`, not low
+(Azure docs), so it was never at minimum. Second, re-running the identical
+comparison with `AZURE_AI_REASONING_EFFORT=high` produced the **identical**
+result: pass 0, fail 3, blocked 2, 40% flip, 100% disagreement. Verified the
+parameter really was in flight rather than silently ignored —
+`completion_tokens_details.reasoning_tokens` moves 166 (default) → 162 (`low`)
+→ 201 (`high`) on terra. So terra's inconsistent multi-frame reading is not
+an effort-budget problem, and there is no known knob that fixes it. Do not
+re-litigate this without new evidence.
 
 **gpt-5.6-luna as translator: inconclusive, not adopted.** Mechanically fine
 (valid JSON, ref-based targeting, temperature auto-handled) but ~2x slower
@@ -468,6 +478,22 @@ instruction-follower over-producing `fail`, and did the opposite: they added
 non-determinism, and the failing run cited insufficient evidence, which that
 file's own precedence block says must route to `blocked`. gpt-4.1 needs no
 prompt changes.
+
+`AZURE_AI_REASONING_EFFORT` (optional, default unset) sends
+`reasoning_effort` on every chat call — `none|minimal|low|medium|high|xhigh|
+max`, supported values vary by model. **Unset means the parameter is not sent
+at all**, so requests stay byte-identical to the measured gpt-4.1
+configuration; this is deliberate, since the evaluator's validated behaviour
+must not shift as a side effect of the setting existing. Non-reasoning
+deployments 400 with "Unrecognized request argument supplied:
+reasoning_effort"; the client drops it and retries, then remembers that
+deployment — the same adaptive pattern as `temperature`, which is what lets
+ONE global setting coexist with a mixed-tier setup (gpt-4.1 evaluator is not
+a reasoning model; gpt-5.4-mini translator is). Reasoning models default to
+`medium` server-side. Note for any future tool-calling work: on gpt-5.6+, a
+Chat Completions request carrying function `tools` fails unless
+`reasoning_effort` is `none` — this project uses `response_format`, not
+tools, so it is unaffected.
 
 `EVALUATOR_PROMPT_FILE` selects the evaluator's prompt file (default
 `result_evaluator.txt`; behaviour unchanged when unset). Any future candidate
