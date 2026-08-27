@@ -411,6 +411,70 @@ exists** — its deployment was deleted 2026-08-27, which also made
 fallback whenever a per-role override is blank, so a dead value there is a
 landmine that surfaces as a mysterious outage).
 
+**THE FALSE-PASS ROOT CAUSE: `_format_detail` erased action targets
+(found + fixed 2026-08-27).** This is the most important entry in this
+section, and it invalidates the two model comparisons below it.
+
+`_format_detail` built its target string from `a.get("selector")` alone. But
+the DOM-grounded contract targets by **`ref`** and leaves `selector` null, so
+two ref-based clicks rendered as the literally uninformative `"click; click"`.
+That string is what the evaluator receives as PERFORMED ACTIONS - and it is
+also the step detail shown in the console tape and the HTML report, so a human
+debugging a run could not see what the agent touched either. Not a regression:
+`ref` targeting and this function both date from the initial commit; the
+function simply never learned about refs.
+
+Measured on `eval_input_tc2_step4.json` - same model (gpt-4.1), same frames,
+same prompt, ONLY the `performed` string varied, N=3:
+
+| `performed` | verdict |
+|---|---|
+| `click; click` (what the pipeline really sent) | **pass 3/3 - WRONG** |
+| `click 'Equipment' (link); click 'Recipe' (link)` | fail 3/3 - right |
+| `click 'Serial Number' (column sort); ...` | fail 3/3 - right |
+
+The frames in that payload show the breadcrumb stuck on `> Dashboard` in all
+three, with only the table row order changing: the two clicks hit column-sort
+arrows and never navigated. So `fail` is correct and `pass` is a false pass.
+**gpt-4.1 was not misjudging - it had been starved of the decisive evidence
+and was guessing.** With targets named it is right every time.
+
+`_format_detail(actions, elements=None)` now names the element a ref points
+at (`click 'Equipment' (a)`), resolved against a `seen_elements` map
+accumulated across ALL of an attempt's snapshots - refs are per-snapshot, so
+the current snapshot alone cannot name an action performed two rounds earlier.
+An unresolvable ref renders as `[eN]` rather than degrading to a bare verb: a
+stale ref is exactly when a human needs to see something was attempted.
+Verified by re-capture: `performed` now reads `click 'Dashboard' (a); click
+'Equipment' (a); click 'Recipe' (a); click 'Account' (a); ...` and the frames
+show real navigation (URL `/equipment/`, breadcrumb `> Equipment`), so that
+run's `pass` is justified. Good payload kept as
+`eval_input_tc2_step4_named.json`; the old one is retained as the record of
+the bug.
+
+**Two harness limitations this exposed - do not trust a comparison that
+ignores them:**
+1. **It never measured correctness**, only self-consistency and agreement
+   with a nominated baseline. The 2026-08-13 gpt-4o to gpt-4.1 migration was
+   validated on the payload above, which BOTH models get wrong; they agreed
+   with each other and the agreement was read as proof. Captured payloads
+   need a ground-truth verdict label before any accuracy claim means anything.
+2. **Flip rate is computed WITHIN one batch**, so it understates instability.
+   luna scored `fail 5/5, 0% flip` in one N=5 batch and `pass 2/2` in the next
+   - invisible to a within-batch metric.
+
+**gpt-5.6 is structurally unsuitable as the EVALUATOR - and it is not about
+judgment quality (2026-08-27).** `gpt-4.1` accepts `temperature=0.1`, so its
+verdicts are near-deterministic (0% flip). Both 5.6 deployments **reject the
+parameter outright** - `Unsupported value: 'temperature' does not support 0.1
+with this model. Only the default is supported` - so `_chat` drops it (see
+`self._no_temperature`) and they run at the server default. They therefore
+**cannot be pinned to a reproducible verdict at all**. For a role that writes
+PASS/FAIL into QMetry and can file Jira bugs, reproducibility is a hard
+requirement, so this disqualifies them independently of how well they judge.
+Variance is far more tolerable in the TRANSLATOR role (a bad action fails
+loudly and retries), so 5.6 remains a candidate there.
+
 **gpt-5.6-terra REJECTED as evaluator (measured 2026-08-27).** The GPT-5.6
 family (`sol` flagship / `terra` balanced / `luna` cheap-fast, all
 2026-07-09, all vision-capable, 1.05M context) arrived and terra was the
@@ -421,14 +485,17 @@ balanced candidate. On `eval_input_tc2_step4.json`, N=5, unmodified prompt:
 | `gpt-4.1` × `result_evaluator.txt` (baseline) | pass 5/5 | 0% | — |
 | `gpt-5.6-terra` × `result_evaluator.txt` | fail 3, blocked 2 | **40%** | 100% |
 
-40% is twice the flip rate that disqualified `result_evaluator_41.txt`. Worse
-than the verdict spread: terra's reason strings contradicted each other about
-what the frames *showed* ("only the Equipment section", "All frames show the
-same Dashboard", "frames remain on the Dashboard") on byte-identical input —
-it was reading the 8-frame sequence differently run to run, not merely
-judging it differently. This does NOT establish that gpt-4.1 is *right* (its
-5/5 pass may be lenient on thin evidence); it establishes terra is
-unreproducible, which disqualifies it either way.
+40% is twice the flip rate that disqualified `result_evaluator_41.txt`. terra's reason strings also varied in how they
+described the screen ("only the Equipment section", "All frames show the same
+Dashboard"). **An earlier version of this note called that self-contradiction;
+that was unfair and is corrected here** - the captured screen genuinely is
+both, with a `> Dashboard` breadcrumb above an `Equipment` panel, so both
+descriptions are defensible. The disqualifying property is unreproducibility,
+whose mechanism is the temperature finding above, not confusion about the
+frames. Nor does this establish that gpt-4.1 is a better judge: on this
+payload BOTH 5.6 models were RIGHT that no navigation occurred and gpt-4.1
+was wrong - because gpt-4.1 was the only one given a starved `performed`
+string, which it filled in optimistically.
 
 **The `reasoning_effort` hypothesis was tested and DISPROVEN (2026-08-27).**
 The obvious explanation — terra judging 8 base64 frames at too low an effort —

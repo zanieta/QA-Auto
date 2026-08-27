@@ -910,6 +910,73 @@ async def test_evaluate_result_receives_performed_actions_summary():
     assert "#go" in kwargs["performed"]
 
 
+def test_format_detail_names_the_element_a_ref_points_at():
+    """A ref-targeted action must say WHAT it touched.
+
+    This is the field the evaluator reads as PERFORMED ACTIONS, and losing it
+    caused a measured false PASS: on eval_input_tc2_step4 gpt-4.1 judged
+    "click; click" as pass 3/3, but the SAME frames with the targets named as
+    fail 3/3 (2026-08-27). The DOM-grounded contract targets by `ref` and
+    leaves `selector` null, so reading only `selector` erased every target.
+    """
+    from agent.orchestrator import _format_detail
+
+    elements = [
+        {"ref": "e2", "tag": "a", "role": "link", "name": "Equipment"},
+        {"ref": "e9", "tag": "th", "role": "columnheader", "name": "Serial Number"},
+    ]
+    detail = _format_detail(
+        [
+            {"action": "click", "ref": "e2", "selector": None, "value": None},
+            {"action": "click", "ref": "e9", "selector": None, "value": None},
+        ],
+        elements,
+    )
+    assert detail == "click 'Equipment' (link); click 'Serial Number' (columnheader)"
+
+
+def test_format_detail_keeps_an_unresolvable_ref_visible():
+    """A ref with no matching snapshot entry must still be reported, never
+    silently dropped back to a bare 'click' — a stale ref is exactly the case
+    where a human needs to see that a target was attempted."""
+    from agent.orchestrator import _format_detail
+
+    detail = _format_detail(
+        [{"action": "click", "ref": "e42", "selector": None, "value": None}],
+        [{"ref": "e1", "tag": "a", "role": "link", "name": "Dashboard"}],
+    )
+    assert "e42" in detail
+
+
+def test_format_detail_shows_ref_when_no_snapshot_is_available():
+    """Dry-run and error paths call this without a snapshot; the ref is still
+    the only record of what was targeted."""
+    from agent.orchestrator import _format_detail
+
+    detail = _format_detail([{"action": "click", "ref": "e3", "selector": None, "value": None}])
+    assert "e3" in detail
+
+
+def test_format_detail_still_prefers_an_explicit_selector():
+    """Unchanged behaviour for selector-targeted actions."""
+    from agent.orchestrator import _format_detail
+
+    detail = _format_detail(
+        [{"action": "fill", "ref": None, "selector": "#email", "value": "a@b.c"}]
+    )
+    assert detail == "fill #email 'a@b.c'"
+
+
+def test_format_detail_names_the_element_and_keeps_the_value():
+    from agent.orchestrator import _format_detail
+
+    detail = _format_detail(
+        [{"action": "fill", "ref": "e6", "selector": None, "value": "Pasta"}],
+        [{"ref": "e6", "tag": "input", "role": "textbox", "name": "Description"}],
+    )
+    assert detail == "fill 'Description' (textbox) 'Pasta'"
+
+
 def test_format_detail_renders_login_logout_as_bare_action_names():
     """The performed-actions summary must never leak credentials — login and
     logout carry no selector/value, so _format_detail renders them bare."""

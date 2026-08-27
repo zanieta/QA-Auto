@@ -650,6 +650,12 @@ class Orchestrator:
         # exactly as before.
         needs_page_data = _step_needs_existing_data(action_text, expected)
         page_data_block: str | None = None
+        # Every element seen across THIS attempt's snapshots, so an action from
+        # an earlier act->observe round is still named later on. The loop
+        # re-snapshots each round and refs are per-snapshot, so the current
+        # snapshot alone cannot name an action performed two rounds ago —
+        # and the evaluator reads the whole list as PERFORMED ACTIONS.
+        seen_elements: dict[str, dict[str, Any]] = {}
 
         for _round in range(max_rounds):
             if _round > 0 and not prev_round_had_actions:
@@ -662,6 +668,9 @@ class Orchestrator:
                 elements = await browser.snapshot_elements()
             except Exception:
                 elements = []
+            for _el in elements:
+                if _el.get("ref"):
+                    seen_elements[_el["ref"]] = _el
 
             context = f"current URL: {await browser.current_url()}"
             if expected:
@@ -675,7 +684,7 @@ class Orchestrator:
                 context = f"{case_context}\n{context}"
             if executed_actions:
                 progress = "\n".join(
-                    f"  {i + 1}. {_format_detail([a])}"
+                    f"  {i + 1}. {_format_detail([a], list(seen_elements.values()))}"
                     for i, a in enumerate(executed_actions)
                 )
                 context += (
@@ -711,7 +720,9 @@ class Orchestrator:
             if not actions:
                 break  # model signals the step's goal is complete
 
-            rs_step.detail = _format_detail(executed_actions + actions)
+            rs_step.detail = _format_detail(
+                executed_actions + actions, list(seen_elements.values())
+            )
             self.on_update(state)
 
             last_error = None
@@ -726,7 +737,9 @@ class Orchestrator:
                     last_error = str(e)
                     break
                 executed_actions.append(a)
-                rs_step.detail = _format_detail(executed_actions)
+                rs_step.detail = _format_detail(
+                    executed_actions, list(seen_elements.values())
+                )
                 self.on_update(state)
                 try:
                     navigated = (await browser.current_url()) != url_before
@@ -785,7 +798,10 @@ class Orchestrator:
             # cost lever in a run — see EVAL_MAX_FRAMES.
             evaluation = await self.azure.evaluate_result(
                 frames[-self.eval_max_frames:], expected,
-                performed=_format_detail(executed_actions),
+                # Names the clicked/filled elements, not just the verbs.
+                # Erasing them measurably caused a false PASS — see
+                # _format_detail's docstring.
+                performed=_format_detail(executed_actions, list(seen_elements.values())),
                 step_text=action_text,
                 guidance=guidance,
             )
@@ -888,15 +904,50 @@ class Orchestrator:
         log.info("AUTO_CREATE_BUGS=true but jira_client is not wired yet")
 
 
-def _format_detail(actions: list[dict[str, Any]]) -> str:
-    """Join translated actions into a one-line mono detail string."""
+def _format_detail(
+    actions: list[dict[str, Any]],
+    elements: list[dict[str, Any]] | None = None,
+) -> str:
+    """Join translated actions into a one-line mono detail string.
+
+    Names the element a `ref` points at, resolved against the page snapshot.
+    This matters far more than it looks: this string is what the evaluator
+    receives as PERFORMED ACTIONS, and it is also the step detail shown in the
+    console tape and the HTML report.
+
+    Reading only `selector` used to erase the target completely, because the
+    DOM-grounded contract targets by `ref` and leaves `selector` null — so two
+    ref-based clicks rendered as the literally uninformative "click; click".
+    Measured consequence (2026-08-27): on `eval_input_tc2_step4.json` gpt-4.1
+    judged that payload pass 3/3, while the SAME frames with the targets named
+    were judged fail 3/3 — correctly, since the clicks only re-sorted a table
+    and never navigated. The evaluator was not misjudging; it had been starved
+    of the decisive evidence and was guessing.
+
+    An unresolvable ref still renders the ref itself rather than falling back
+    to a bare action name: a stale ref is precisely when a human needs to see
+    that something was targeted.
+    """
+    by_ref = {e.get("ref"): e for e in (elements or []) if e.get("ref")}
     parts: list[str] = []
     for a in actions:
         act = a.get("action", "?")
-        sel = a.get("selector") or ""
+        ref = a.get("ref")
+        target = ""
+        if ref:
+            el = by_ref.get(ref)
+            if el:
+                kind = el.get("role") or el.get("tag") or "?"
+                target = f"{el.get('name', '') or ref!r} ({kind})"
+                if el.get("name"):
+                    target = f"'{el['name']}' ({kind})"
+            else:
+                target = f"[{ref}]"
+        elif a.get("selector"):
+            target = a["selector"]
         val = a.get("value")
         if val:
-            parts.append(f"{act} {sel} {val!r}".strip())
+            parts.append(f"{act} {target} {val!r}".strip())
         else:
-            parts.append(f"{act} {sel}".strip())
+            parts.append(f"{act} {target}".strip())
     return "; ".join(parts)
