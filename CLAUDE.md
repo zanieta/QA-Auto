@@ -111,7 +111,7 @@ secrets — it only talks to `server.py`, which holds all credentials server-sid
 # Azure AI
 AZURE_AI_ENDPOINT=https://<your-project>.openai.azure.com/
 AZURE_AI_API_KEY=<your-azure-ai-key>
-AZURE_AI_DEPLOYMENT=gpt-4o
+AZURE_AI_DEPLOYMENT=gpt-4.1
 AZURE_AI_TRANSLATOR_DEPLOYMENT=   # optional; cheap text model for step translation
 AZURE_AI_EVALUATOR_DEPLOYMENT=    # optional; vision model for screenshot evaluation
                                   # both fall back to AZURE_AI_DEPLOYMENT
@@ -403,10 +403,44 @@ target by `ref`. The orchestrator snapshots before translating and re-snapshots 
 re-translates + retries a step once on a browser action failure (DOM-grounded
 actions — see the 2026-06-30 spec).
 
-**Evaluator model: gpt-4.1 (migrated 2026-08-13, measured).** `gpt-4o` is
+**Evaluator model: gpt-4.1 (migrated 2026-08-13, measured).** `gpt-4o` was
 deprecated in Azure, so `AZURE_AI_EVALUATOR_DEPLOYMENT=gpt-4.1` with the
-**unmodified** `prompts/result_evaluator.txt`. gpt-4o remains deployed, so the
-revert is one env var.
+**unmodified** `prompts/result_evaluator.txt`. **The gpt-4o revert no longer
+exists** — its deployment was deleted 2026-08-27, which also made
+`AZURE_AI_DEPLOYMENT=gpt-4o` a hard 404 (now `gpt-4.1`; that variable is the
+fallback whenever a per-role override is blank, so a dead value there is a
+landmine that surfaces as a mysterious outage).
+
+**gpt-5.6-terra REJECTED as evaluator (measured 2026-08-27).** The GPT-5.6
+family (`sol` flagship / `terra` balanced / `luna` cheap-fast, all
+2026-07-09, all vision-capable, 1.05M context) arrived and terra was the
+balanced candidate. On `eval_input_tc2_step4.json`, N=5, unmodified prompt:
+
+| combination | verdicts | flip rate | vs baseline |
+|---|---|---|---|
+| `gpt-4.1` × `result_evaluator.txt` (baseline) | pass 5/5 | 0% | — |
+| `gpt-5.6-terra` × `result_evaluator.txt` | fail 3, blocked 2 | **40%** | 100% |
+
+40% is twice the flip rate that disqualified `result_evaluator_41.txt`. Worse
+than the verdict spread: terra's reason strings contradicted each other about
+what the frames *showed* ("only the Equipment section", "All frames show the
+same Dashboard", "frames remain on the Dashboard") on byte-identical input —
+it was reading the 8-frame sequence differently run to run, not merely
+judging it differently. This does NOT establish that gpt-4.1 is *right* (its
+5/5 pass may be lenient on thin evidence); it establishes terra is
+unreproducible, which disqualifies it either way. Untested lead if revisited:
+`_chat` never sends `reasoning_effort`, so terra may be judging 8 base64
+frames at a low default effort.
+
+**gpt-5.6-luna as translator: inconclusive, not adopted.** Mechanically fine
+(valid JSON, ref-based targeting, temperature auto-handled) but ~2x slower
+than gpt-5.4-mini. A quality A/B was attempted with a SYNTHETIC element
+snapshot that did not contain the steps' real targets, so both models were
+guessing — no conclusion drawn. It did show the two fail differently when a
+target is absent: luna emits `wait` (declines), gpt-5.4-mini fabricates (it
+clicked *Save* when asked for a pencil icon, and filled *Email* with the
+literal string "Description"). A real verdict needs a live run with real
+snapshots.
 
 The migration was decided by measurement, not by reading model cards.
 `scripts/prompt_eval/compare_combinations.py` judges one captured input N times
