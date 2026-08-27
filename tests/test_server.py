@@ -284,6 +284,34 @@ def test_post_runs_rejects_empty_case_id_list(client):
     assert r.status_code == 422
 
 
+def test_post_runs_invalidates_cached_steps_for_the_selected_cases(client):
+    """Every run must read current QMetry content.
+
+    Steps and test data are cached for the whole server process, so a tester
+    who fixes a failing case in QMetry and presses Run again would otherwise
+    re-run the version loaded at server start -- and conclude the fix did not
+    work. Starting a run drops the cache for the cases it covers.
+    """
+    calls = []
+
+    with patch.object(server_mod, "_run_in_background", new=AsyncMock()),          patch.object(server_mod, "invalidate_case_cache", side_effect=lambda *a: calls.append(a)):
+        r = client.post("/runs", json={"plan": "TR-1", "case_ids": ["TC-1", "TC-2"]})
+
+    assert r.status_code == 200
+    assert calls == [("TR-1", ["TC-1", "TC-2"])]
+
+
+def test_post_runs_invalidates_whole_plan_when_no_selection(client):
+    """No selection means every case runs, so every case's cache is dropped."""
+    calls = []
+
+    with patch.object(server_mod, "_run_in_background", new=AsyncMock()),          patch.object(server_mod, "invalidate_case_cache", side_effect=lambda *a: calls.append(a)):
+        r = client.post("/runs", json={"plan": "TR-1"})
+
+    assert r.status_code == 200
+    assert calls == [("TR-1", None)]
+
+
 # ----- POST /stop (emergency stop) ----------------------------------------
 
 

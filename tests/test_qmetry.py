@@ -1054,3 +1054,44 @@ async def test_write_case_execution_step_error_is_non_fatal():
     assert len(result.errors) == 1
     assert result.errors[0]["step_exec_id"] == 501
     client.post_execution_result.assert_awaited_once()
+
+
+# ----- invalidating cached steps before a run -------------------------------
+
+from agent import qmetry as qm  # noqa: E402  (module-level cache access)
+
+
+def test_invalidate_case_cache_drops_steps_and_test_data_for_one_plan():
+    """A tester who fixes a case's steps in QMetry and re-runs must get the NEW
+    steps. _STEPS_CACHE and _CASE_TEST_DATA_CACHE are process-lifetime, so
+    without this a run keeps replaying the version loaded when the server
+    started -- and the fix looks like it did nothing."""
+    qm._STEPS_CACHE[("TR-1", "TC-1")] = [{"action": "old"}]
+    qm._CASE_TEST_DATA_CACHE[("TR-1", "TC-1")] = [{"name": "Role", "value": "Admin"}]
+    qm._STEPS_CACHE[("TR-2", "TC-9")] = [{"action": "other plan"}]
+    qm._CASES_CACHE["TR-1"] = (0.0, [{"id": "TC-1"}])
+
+    qm.invalidate_case_cache("TR-1")
+
+    assert ("TR-1", "TC-1") not in qm._STEPS_CACHE
+    assert ("TR-1", "TC-1") not in qm._CASE_TEST_DATA_CACHE
+    assert "TR-1" not in qm._CASES_CACHE
+    # Another plan's entries are untouched -- a run of one cycle must not make
+    # every other cycle in the console re-crawl QMetry.
+    assert ("TR-2", "TC-9") in qm._STEPS_CACHE
+
+
+def test_invalidate_case_cache_limited_to_named_cases():
+    """With case_ids given, only those cases are dropped: a 2-of-73 run should
+    not force the other 71 to re-fetch on the next list refresh."""
+    qm._STEPS_CACHE[("TR-1", "TC-1")] = [{"action": "a"}]
+    qm._STEPS_CACHE[("TR-1", "TC-2")] = [{"action": "b"}]
+
+    qm.invalidate_case_cache("TR-1", ["TC-1"])
+
+    assert ("TR-1", "TC-1") not in qm._STEPS_CACHE
+    assert ("TR-1", "TC-2") in qm._STEPS_CACHE
+
+
+def test_invalidate_case_cache_unknown_plan_is_a_no_op():
+    qm.invalidate_case_cache("nope")  # must not raise

@@ -364,6 +364,22 @@ QMetry REST API client. **Status: implemented and working against the LIVE API**
 `QMETRY_API_KEY` is set (and isn't the `REPLACE_WITH…` placeholder), else
 `FixtureCaseSource`.
 
+**Starting a run refetches steps (2026-08-27).** `_STEPS_CACHE` and
+`_CASE_TEST_DATA_CACHE` live for the whole server process — steps are the
+expensive part and don't change while a tester browses. But they DO change when
+someone edits the case in QMetry, which is the exact loop a tester is in when a
+case fails: fix the steps, re-run, see if it passed. Without invalidation every
+run in that process replayed the version loaded at startup, so the fix looked
+like it did nothing. `POST /runs` therefore calls
+`invalidate_case_cache(plan, case_ids)` before starting. Scoped to that plan
+and (when a selection is given) those case ids, so running one cycle never
+makes every other cycle in the console re-crawl QMetry. The plan's short-TTL
+`_CASES_CACHE` entry goes too — otherwise the refetch just re-attaches the
+stale steps held on that entry. Browser state was already fresh per case
+(`launch()` + `new_context()` per case, closed in a `finally`, no
+`user_data_dir`/`storage_state`), so no cookies or sessions ever carry between
+cases or runs.
+
 `list_cases(plan_key, with_steps=True)`: steps cost one call per case, so the
 console asks for `with_steps=False` (one call for the whole run) and hydrates the
 opened case via `get_case_steps`. Cases carry `_steps_loaded`. `run_plan` keeps

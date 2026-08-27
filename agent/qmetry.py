@@ -37,6 +37,32 @@ _STEPS_CACHE: dict[tuple[str, str], list[dict]] = {}
 # A case's parameter table ("Test Data" in QMetry's UI), cached alongside its
 # steps — it arrives from the same call and has the same lifetime.
 _CASE_TEST_DATA_CACHE: dict[tuple[str, str], list[dict]] = {}
+def invalidate_case_cache(plan_key: str, case_ids: list[str] | None = None) -> None:
+    """Forget cached steps + test data so the next read comes from QMetry.
+
+    _STEPS_CACHE and _CASE_TEST_DATA_CACHE deliberately live for the whole
+    server process: steps are the expensive part (one call per case) and they
+    do not change while a tester is browsing. But they DO change when someone
+    edits the case in QMetry — the exact loop a tester is in when a case fails:
+    fix the steps, re-run, see if it passes. Without this, every run in that
+    process replays the version loaded at startup and the fix looks like it did
+    nothing. So `POST /runs` calls this for the cases it is about to run.
+
+    Scoped on purpose: only the named plan (and, when given, only those case
+    ids) is dropped, so running one cycle never makes every other cycle in the
+    console re-crawl QMetry. The short-TTL case list for the plan goes too, or
+    the refetch would just re-attach the stale steps from that entry.
+    """
+    _CASES_CACHE.pop(plan_key, None)
+    wanted = set(case_ids) if case_ids is not None else None
+    for cache in (_STEPS_CACHE, _CASE_TEST_DATA_CACHE):
+        for key in [
+            k for k in cache
+            if k[0] == plan_key and (wanted is None or k[1] in wanted)
+        ]:
+            cache.pop(key, None)
+
+
 # How many test cases to hydrate steps for concurrently.
 _CASE_FETCH_CONCURRENCY = 8
 

@@ -44,6 +44,8 @@ from agent.case_source import CaseSource, FixtureCaseSource
 from agent.knowledge import record_override
 from agent.manual_state import ManualStore, compose_agent_note, compose_comment
 from agent.orchestrator import Orchestrator
+# Module level so a run can drop stale cached steps; harmless in fixture mode.
+from agent.qmetry import invalidate_case_cache
 from agent.run_state import RunState, TestCase
 from agent.settings import SettingsStore
 
@@ -569,6 +571,13 @@ async def start_run(body: StartRunBody) -> dict:
     """Kick off a plan run; return its run id so the frontend can subscribe."""
     if body.case_ids is not None and not body.case_ids:
         raise HTTPException(422, "Select at least one test case to run")
+
+    # Steps and test data are cached for the whole server process. A tester who
+    # fixes a failing case in QMetry and presses Run again must get the NEW
+    # steps, not the version loaded when the server started — otherwise the fix
+    # looks like it did nothing. Scoped to this plan (and this selection) so
+    # running one cycle doesn't make every other cycle re-crawl QMetry.
+    invalidate_case_cache(body.plan, body.case_ids)
 
     # Eagerly construct the RunState so the GET endpoint works immediately.
     # The orchestrator will overwrite RUNS[run_id] with its own state when it
