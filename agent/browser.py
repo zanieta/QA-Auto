@@ -327,7 +327,7 @@ class BrowserSession:
             # No resolvable toggle -> unusable hint -> dropped.
             and e.get("parent_ref")
         ]
-        if len(visible) >= MAX_SNAPSHOT_ELEMENTS:
+        if len(visible) > MAX_SNAPSHOT_ELEMENTS:
             log.warning("Element snapshot truncated to %d", MAX_SNAPSHOT_ELEMENTS)
         if len(hidden) > MAX_HIDDEN_ELEMENTS:
             log.warning("Hidden element list truncated to %d", MAX_HIDDEN_ELEMENTS)

@@ -170,13 +170,18 @@ async def test_snapshot_elements_keeps_hidden_children_after_visible_ones():
 
     They carry no ref (they are not clickable while hidden) and name the
     visible control that toggles them — the only move available to the model.
+
+    The page.evaluate fixture below puts the hidden entry FIRST and the
+    visible one SECOND (interleaved, not already visible-first) — that is
+    the only input shape that fails against a naive pass-through and
+    actually exercises the reordering guarantee this test's name promises.
     """
     s, page = _session_with_fake_page()
     page.evaluate = AsyncMock(
         return_value=[
-            {"ref": "e7", "tag": "a", "role": "", "name": "Recipe"},
             {"ref": None, "hidden": True, "parent_ref": "e7", "parent": "Recipe",
              "tag": "a", "role": "", "name": "Edit Inventory"},
+            {"ref": "e7", "tag": "a", "role": "", "name": "Recipe"},
         ]
     )
     out = await s.snapshot_elements()
