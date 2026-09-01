@@ -288,6 +288,14 @@ export default function App() {
             id: c.id,
             name: c.name,
             status: c.manual.status === 'unmarked' ? 'queued' : c.manual.status,
+            // Carry QMetry's recorded verdict through (2026-09-01). This
+            // mapping listed only id/name/status, so the Manual tab's rail had
+            // no verdict to show at all — no badge, no stripe colour — while
+            // the Live tab's rail showed them. An unmarked case maps to
+            // `queued` just above, which is exactly the state that falls back
+            // to the QMetry verdict; a case marked in THIS session keeps its
+            // own mark, which rightly outranks the old record.
+            execution_result: c.execution_result ?? null,
           })),
         }
       : liveRailState
