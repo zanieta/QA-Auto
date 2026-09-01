@@ -7,6 +7,7 @@ The orchestrator's background task is mocked so we don't need real Azure creds.
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -2088,3 +2089,44 @@ def test_run_agent_case_forces_headless(client, tmp_path, monkeypatch):
     asyncio.run(server_mod._run_agent_case("run-x", "TP-45", "A", None))
 
     assert seen["headless"] is True, "Manual runs must not open a browser window"
+
+
+# ----- the plan key a tester actually reads --------------------------------
+
+
+def test_post_runs_shows_the_human_plan_key_not_the_internal_cycle_id(client):
+    """A run's header must never read "029ckiej390jr".
+
+    The console opens a cycle by its INTERNAL QMetry id (`?cycle=<id>` deep
+    links, and QMETRY_DEFAULT_CYCLE is one too), so `body.plan` is that id.
+    The orchestrator resolves the human key via get_plan(), but that lands
+    seconds later on a big cycle -- and never at all if the plan fails to
+    load -- so the eagerly-built state was showing the raw id in the
+    meantime. It reuses the already-loaded manual session, so no extra
+    QMetry call is spent.
+    """
+    session = SimpleNamespace(
+        plan=SimpleNamespace(key="SOUSCLOUD-TR-482", name="Claude - Sample Test Cycle")
+    )
+
+    with patch.object(server_mod, "_run_in_background", new=AsyncMock()), \
+         patch.object(server_mod.MANUAL, "get", return_value=session):
+        r = client.post("/runs", json={"plan": "1ZwYH2ObF7AGZa"})
+
+    assert r.status_code == 200
+    state = client.get(f"/runs/{r.json()['run_id']}").json()
+    assert state["plan"]["key"] == "SOUSCLOUD-TR-482"
+    assert state["plan"]["name"] == "Claude - Sample Test Cycle"
+
+
+def test_post_runs_falls_back_to_the_raw_plan_without_a_session(client):
+    """The CLI and direct API callers never open a manual session, so the raw
+    plan argument stays the best available label -- a missing session must not
+    500 the run."""
+    with patch.object(server_mod, "_run_in_background", new=AsyncMock()), \
+         patch.object(server_mod.MANUAL, "get", return_value=None):
+        r = client.post("/runs", json={"plan": "SOUSCLOUD-TP-45"})
+
+    assert r.status_code == 200
+    state = client.get(f"/runs/{r.json()['run_id']}").json()
+    assert state["plan"]["key"] == "SOUSCLOUD-TP-45"

@@ -584,7 +584,20 @@ async def start_run(body: StartRunBody) -> dict:
     # starts producing updates.
     from agent.run_state import new_run_state
 
-    state = new_run_state(body.plan)
+    # Show the HUMAN key, never the internal QMetry cycle id. `body.plan` is
+    # whatever the console opened with, which for a `?cycle=<id>` deep link is
+    # an internal id like "029ckiej390jr" — meaningless to a tester and not
+    # what QMetry's own UI shows. The orchestrator resolves the real key via
+    # get_plan(), but that lands SECONDS later on a big cycle (and never at all
+    # if the plan fails to load), so until then the header read as the raw id.
+    # The manual session already holds the resolved key and name, so reusing it
+    # costs no extra QMetry call. Falls back to the raw plan for callers that
+    # never opened a session (the CLI, a direct API call).
+    _sess = MANUAL.get(body.plan)
+    state = new_run_state(
+        _sess.plan.key if _sess else body.plan,
+        _sess.plan.name if _sess else "",
+    )
     RUNS[state.run_id] = state
     LATEST[state.run_id] = state.to_dict()
     LISTENERS.setdefault(state.run_id, [])
@@ -887,7 +900,10 @@ async def run_agent_for_case(
     except KeyError as e:
         raise HTTPException(404, str(e))
 
-    state = new_run_state(plan, session.plan.name)
+    # `plan` here is the store key (an internal cycle id, or "TC:<case key>");
+    # session.plan.key is the human key a tester recognises. Same reason as
+    # POST /runs above.
+    state = new_run_state(session.plan.key, session.plan.name)
     state.add_case(TestCase(id=case.id, name=case.name))
     RUNS[state.run_id] = state
     LATEST[state.run_id] = state.to_dict()
