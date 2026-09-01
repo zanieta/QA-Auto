@@ -338,55 +338,61 @@ live TC-1985 run is what validates it."
 
 - [ ] **Step 1: Write the failing tests**
 
-Add to `tests/test_azure_ai.py`:
+Add to `tests/test_azure_ai.py`, next to `test_translate_step_includes_elements_in_prompt`
+(line ~360) and following its exact style — a `_Client` with `_chat` swapped for a
+capturing `fake_chat`. Do NOT invent new helpers:
 
 ```python
 @pytest.mark.asyncio
-async def test_translate_step_renders_hidden_elements_separately(monkeypatch):
-    """PAGE ELEMENTS must keep its exact shape — refs only — while hidden
+async def test_translate_step_renders_hidden_elements_separately():
+    """PAGE ELEMENTS keeps its exact shape — choosable refs only — while hidden
     entries appear in their own block naming the parent to click."""
-    client = _client_with_reply('{"actions": []}', monkeypatch)
+    client = _Client(endpoint="https://x", api_key="k", deployment="gpt-4o")
+    captured = {}
+
+    async def fake_chat(messages, **kw):
+        captured["messages"] = messages
+        return _json.dumps({"actions": []})
+
+    client._chat = fake_chat  # type: ignore
     await client.translate_step(
         "Go to Recipe > Edit Inventory",
-        app_context="current URL: https://app/",
+        app_context="url: /x",
         elements=[
             {"ref": "e7", "tag": "a", "role": "", "name": "Recipe"},
             {"ref": None, "hidden": True, "parent_ref": "e7", "parent": "Recipe",
              "tag": "a", "role": "", "name": "Edit Inventory"},
         ],
     )
-    sent = _user_content(client)
+    sent = captured["messages"][-1]["content"]
     assert "PAGE ELEMENTS" in sent
     assert "HIDDEN ELEMENTS" in sent
-    # The hidden child must NOT appear as a choosable ref.
-    page_block = sent.split("HIDDEN ELEMENTS")[0]
+    page_block, hidden_block = sent.split("HIDDEN ELEMENTS")
+    # The hidden child must never look like a choosable ref.
     assert "Edit Inventory" not in page_block
-    assert 'e7' in page_block
-    hidden_block = sent.split("HIDDEN ELEMENTS")[1]
+    assert "e7" in page_block
     assert "Edit Inventory" in hidden_block
     assert "e7" in hidden_block
 
 
 @pytest.mark.asyncio
-async def test_translate_step_omits_the_hidden_block_when_there_are_none(monkeypatch):
-    """Steps on a page with nothing hidden must see the prompt they see today —
+async def test_translate_step_omits_the_hidden_block_when_there_are_none():
+    """A page with nothing hidden must produce the prompt it produces today —
     not an empty section inviting the model to invent one."""
-    client = _client_with_reply('{"actions": []}', monkeypatch)
+    client = _Client(endpoint="https://x", api_key="k", deployment="gpt-4o")
+    captured = {}
+
+    async def fake_chat(messages, **kw):
+        captured["messages"] = messages
+        return _json.dumps({"actions": []})
+
+    client._chat = fake_chat  # type: ignore
     await client.translate_step(
         "Click Save",
-        app_context="current URL: https://app/",
+        app_context="url: /x",
         elements=[{"ref": "e1", "tag": "button", "role": "", "name": "Save"}],
     )
-    assert "HIDDEN ELEMENTS" not in _user_content(client)
-```
-
-If `_client_with_reply` / `_user_content` do not already exist in that file, define them next to the other helpers, matching the file's existing mocking style:
-
-```python
-def _user_content(client) -> str:
-    """The user message of the last chat call."""
-    messages = client._chat.await_args.args[0]
-    return next(m["content"] for m in messages if m["role"] == "user")
+    assert "HIDDEN ELEMENTS" not in captured["messages"][-1]["content"]
 ```
 
 - [ ] **Step 2: Run the tests to verify they fail**
@@ -687,7 +693,18 @@ with:
             # Deciding HERE, from this round's own snapshot, is what makes the
             # check nearly free: a step that revealed nothing pays one DOM
             # query and NO model call.
-            names = {(e.get("tag") or "", e.get("name") or "") for e in elements}
+            # VISIBLE elements only (`e.get("ref")`). A hidden entry carries the
+            # same (tag, name) as the element it becomes once revealed, so
+            # counting hidden entries here would mean "Edit Inventory" was
+            # already known in round 1 and its appearance in round 2 registered
+            # as nothing new — the loop would break and TC-1985 would still
+            # fail. The reveal we are detecting is precisely a hidden element
+            # BECOMING visible.
+            names = {
+                (e.get("tag") or "", e.get("name") or "")
+                for e in elements
+                if e.get("ref")
+            }
             if check_for_reveal:
                 revealed = names - (prev_names or set())
                 if not revealed:
