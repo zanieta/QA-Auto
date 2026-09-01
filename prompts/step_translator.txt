@@ -54,6 +54,14 @@ Rules:
   step's target element is in the list, target it DIRECTLY with a single action.
   Never click a parent menu/tab to "reveal" an element that is already listed —
   menu toggles collapse an open menu and hide the target.
+- If a HIDDEN ELEMENTS block is present, those items EXIST in the page but are
+  not visible and cannot be clicked yet — they have no ref on purpose. If the
+  CURRENT step's target is listed there (for example "Edit Inventory" under
+  "Recipe"), your plan for this round is to click its PARENT ref to reveal it.
+  You will then be called again with a fresh PAGE ELEMENTS list containing the
+  target, and you click it then. Never guess a different visible menu item
+  because the target is missing from PAGE ELEMENTS, and never invent a ref for
+  a hidden item.
 - A step may require several actions (e.g. fill the name, then click Save) —
   list them in order.
 - Never type usernames, passwords, or invented credentials into any field.
