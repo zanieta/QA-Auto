@@ -41,6 +41,15 @@ export default function App() {
   const [starting, setStarting] = useState(false)
   const [stopping, setStopping] = useState(false)
   const [stopMsg, setStopMsg] = useState('')
+  // Set when a Stop press actually cancelled something, cleared when the next
+  // run starts. Drives the "Stopped" pill in the Live stage head: the rail's
+  // one-line message scrolls out of sight in a long cycle, and a cancelled
+  // case reads as `blocked` in the tape, which is also what a genuine
+  // obstruction looks like — so without this a tester could not tell their own
+  // Stop press from an app failure. Client-side only: a page reload forgets it,
+  // but each cancelled step also carries "Stopped by the tester" as its
+  // evaluation, which survives (server.py's STOPPED_BY_TESTER).
+  const [stoppedAt, setStoppedAt] = useState(null)
   // Which cases the next Live run covers. All-ticked by default so pressing
   // Run without touching anything behaves exactly as it did before tickboxes.
   const [selectedIds, setSelectedIds] = useState(() => new Set())
@@ -318,6 +327,7 @@ export default function App() {
       const { cancelled } = await stopAll()
       const n = cancelled?.length ?? 0
       setStopMsg(n ? `Stopped ${n} run${n === 1 ? '' : 's'}` : 'Nothing was running')
+      if (n) setStoppedAt(new Date())
       refreshManual?.()
     } catch (e) {
       console.error('stopAll failed:', e)
@@ -329,6 +339,7 @@ export default function App() {
 
   async function handleRun() {
     if (!planKey) return
+    setStoppedAt(null)
     setStarting(true)
     try {
       // Run the real QMetry cycle currently shown (?cycle=…), not the fixture plan.
@@ -456,6 +467,14 @@ export default function App() {
               <h1 className="stage-head-title">
                 {activeCase?.name ?? liveState?.plan?.name ?? 'QA Agent Console'}
               </h1>
+              {stoppedAt && !isRunning && (
+                <span
+                  className="stage-head-stopped"
+                  title={`Emergency stop pressed at ${stoppedAt.toLocaleTimeString()}. Cases caught mid-flight are marked blocked, with "Stopped by the tester" as the reason.`}
+                >
+                  ■ Stopped {stoppedAt.toLocaleTimeString()}
+                </span>
+              )}
               <button
                 type="button"
                 className={`btn btn-primary ${isRunning ? 'running' : ''}`}

@@ -199,6 +199,12 @@ async def _no_cache_html(request, call_next):
 # ---------------------------------------------------------------- run wiring
 
 
+# Written into a step's `evaluation` when the emergency stop caught it
+# mid-flight, so the tape says why it is blocked rather than leaving the
+# tester to guess between their own Stop press and an app failure.
+STOPPED_BY_TESTER = "Stopped by the tester (emergency stop)."
+
+
 def _finalize_cancelled_run(run_id: str, state: RunState) -> None:
     """Mark a cancelled run terminal WITHOUT erasing what it managed to run.
 
@@ -225,6 +231,14 @@ def _finalize_cancelled_run(run_id: str, state: RunState) -> None:
             for step in case.get("steps") or []:
                 if step.get("status") == "running":
                     step["status"] = "blocked"
+                    # Say WHY in the tape. `blocked` alone is ambiguous — it is
+                    # also what a genuine obstruction looks like — so without
+                    # this a tester reading a stopped run could not tell their
+                    # own Stop press from an app problem. Only fills an EMPTY
+                    # evaluation: a real reason already written by the
+                    # evaluator outranks this note.
+                    if not step.get("evaluation"):
+                        step["evaluation"] = STOPPED_BY_TESTER
         snapshot["status"] = "done"
         snapshot["summary"] = _recount(snapshot["test_cases"])
         for q in list(LISTENERS.get(run_id, [])):
@@ -237,6 +251,11 @@ def _finalize_cancelled_run(run_id: str, state: RunState) -> None:
     for case in state.test_cases:
         if case.status == "running":
             state.resolve_case(case.id, "blocked")
+        for step in case.steps:
+            if step.status == "running":
+                step.status = "blocked"
+                if not step.evaluation:
+                    step.evaluation = STOPPED_BY_TESTER
     state.finish()
     _make_on_update(run_id)(state)
 

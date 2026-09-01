@@ -302,13 +302,31 @@ Before a run starts, each case row's status stripe shows that case's **last
 QMetry verdict**, in QMetry's own colours, so the console agrees with what a
 tester sees on the QMetry site:
 
-| QMetry result | stripe | token |
-|---|---|---|
-| Pass | green | `--qm-pass` `#14892C` |
-| Fail | red | `--qm-fail` `#D04437` |
-| Blocked | grey | `--qm-blocked` `#CCCCCC` |
-| Work In Progress | amber | `--qm-wip` `#F6C342` |
-| Not Executed | *falls through to the `queued` look* (faint hairline) | — |
+Each row carries the verdict as **both** a stripe and a text **badge** (the
+word, in mono, on the id's line). QMetry labels every row in text, and a
+tester's actual job is to pick the never-run cases out of a long cycle — you
+cannot scan for that by decoding hues.
+
+| QMetry result | stripe + badge | badge text | token |
+|---|---|---|---|
+| Pass | green | `Pass` | `--qm-pass` `#14892C` |
+| Fail | red | `Fail` | `--qm-fail` `#D04437` |
+| Blocked | grey | `Blocked` | `--qm-blocked` `#CCCCCC` |
+| Work In Progress | amber | `WIP` | `--qm-wip` `#F6C342` |
+| Not Executed | blue | `Not Executed` | `--qm-notrun` `#205081` |
+
+**"Not Executed" has its own rule since 2026-09-01.** It used to fall through
+to the `queued` look, on the reasoning that a never-run case and a not-yet-run
+case read the same to a tester about to press Run. That was wrong for the job
+people actually do — finding which cases have never been executed — so it now
+carries QMetry's own colour and label. A never-run case is the "Not Executed"
+RESULT TYPE, not a null, so it is a real state to show rather than an absence
+to hide.
+
+Live run status badges use the Duke palette and the same words (`Pass`,
+`Fail`, `Blocked`, `Running`); a `queued` case shows no badge, so its QMetry
+verdict is what you see. An unmapped verdict QMetry might add later renders its
+own name on the neutral queued colour rather than showing nothing.
 
 Mapped by result **name**, never by the hex the API returns per case: an
 inline hex would break the "derive every colour from tokens" rule, and would
@@ -385,6 +403,14 @@ saved password (same rule as the Manual tab's per-case
 - **Run button**: primary navy. States: idle ("▶ Run plan"), running (inverts to
   white-on-navy-border, "⏸ Running…"), done ("▶ Run again"). Disabled while a run
   is in progress for other controls.
+- **"Stopped hh:mm:ss" pill** (`.stage-head-stopped`, amber): appears after an
+  emergency stop that actually cancelled something, and clears when the next
+  run starts. It exists because a cancelled case reads as `blocked` in the
+  tape — identical to a genuine obstruction — and the rail's one-line stop
+  message scrolls out of sight in a long cycle. Amber, not red: the run was
+  halted on purpose, it did not fail. Client-side state, so a page reload
+  forgets it; each cancelled step also carries `"Stopped by the tester
+  (emergency stop)."` as its `evaluation`, which does survive.
 - **No login row.** There used to be a username/password pair beside the Run
   button. It was REMOVED (2026-09-01) along with the Manual card's per-case
   pair — see "Credential precedence" below. `POST /runs` no longer carries

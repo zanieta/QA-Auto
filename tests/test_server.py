@@ -2205,3 +2205,75 @@ def test_config_skips_resolution_when_no_default_cycle_is_set(client, monkeypatc
     assert body["default_cycle"] is None
     assert body["default_cycle_key"] is None
     assert calls == []
+
+
+# ----- the emergency stop says so, in the tape -----------------------------
+
+
+def test_cancelled_run_records_why_its_steps_are_blocked(monkeypatch):
+    """`blocked` alone is ambiguous — it is also what a genuine obstruction
+    looks like — so a stopped run must say the halt was deliberate."""
+    run_id = "run-stop-1"
+    server_mod.LATEST[run_id] = {
+        "run_id": run_id,
+        "status": "running",
+        "plan": {"key": "TR-1", "name": "n"},
+        "summary": {"total": 1, "passed": 0, "failed": 0, "blocked": 0},
+        "test_cases": [
+            {
+                "id": "A",
+                "name": "Alpha",
+                "status": "running",
+                "steps": [
+                    {"action": "one", "status": "running", "evaluation": ""},
+                    {"action": "two", "status": "pass", "evaluation": "Looks right."},
+                ],
+            }
+        ],
+    }
+    server_mod.LISTENERS.setdefault(run_id, [])
+    try:
+        server_mod._finalize_cancelled_run(run_id, new_run_state("TR-1"))
+        snap = server_mod.LATEST[run_id]
+        assert snap["status"] == "done"
+        assert snap["test_cases"][0]["status"] == "blocked"
+        steps = snap["test_cases"][0]["steps"]
+        assert steps[0]["status"] == "blocked"
+        assert steps[0]["evaluation"] == server_mod.STOPPED_BY_TESTER
+        # An already-resolved step keeps its real verdict AND its real reason.
+        assert steps[1]["status"] == "pass"
+        assert steps[1]["evaluation"] == "Looks right."
+    finally:
+        server_mod.LATEST.pop(run_id, None)
+        server_mod.LISTENERS.pop(run_id, None)
+
+
+def test_cancelled_run_does_not_overwrite_an_existing_step_reason(monkeypatch):
+    """A reason the evaluator already wrote outranks the stop note."""
+    run_id = "run-stop-2"
+    server_mod.LATEST[run_id] = {
+        "run_id": run_id,
+        "status": "running",
+        "plan": {"key": "TR-1", "name": "n"},
+        "summary": {"total": 1, "passed": 0, "failed": 0, "blocked": 0},
+        "test_cases": [
+            {
+                "id": "A",
+                "name": "Alpha",
+                "status": "running",
+                "steps": [
+                    {"action": "one", "status": "running",
+                     "evaluation": "Save button never appeared."},
+                ],
+            }
+        ],
+    }
+    server_mod.LISTENERS.setdefault(run_id, [])
+    try:
+        server_mod._finalize_cancelled_run(run_id, new_run_state("TR-1"))
+        step = server_mod.LATEST[run_id]["test_cases"][0]["steps"][0]
+        assert step["status"] == "blocked"
+        assert step["evaluation"] == "Save button never appeared."
+    finally:
+        server_mod.LATEST.pop(run_id, None)
+        server_mod.LISTENERS.pop(run_id, None)

@@ -37,6 +37,9 @@
   --qm-blocked: #CCCCCC;
   --qm-wip:     #F6C342;   /* "Work In Progress" — appeared in 0 of 8 cycles
                               probed, rendered if it ever shows up */
+  --qm-notrun:  #205081;   /* "Not Executed" — QMetry's own colour. A never-run
+                              case is this RESULT TYPE, not a null, so it is a
+                              real state to show and not an absence to hide. */
 
   /* Type */
   --font: 'Inter', system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
@@ -341,6 +344,10 @@ button:focus-visible,
 .case-row-wrap.qm-fail    { border-left-color: var(--qm-fail); }
 .case-row-wrap.qm-blocked { border-left-color: var(--qm-blocked); }
 .case-row-wrap.qm-wip     { border-left-color: var(--qm-wip); }
+/* Not Executed: QMetry's own #205081. Previously fell through to the queued
+   hairline, which made "never run" indistinguishable from "not run yet in
+   this session" — the one thing a tester needs to pick out of a long cycle. */
+.case-row-wrap.qm-notrun  { border-left-color: var(--qm-notrun); }
 
 .case-row-wrap.pass    { border-left-color: var(--green); }
 .case-row-wrap.fail    { border-left-color: var(--red); }
@@ -1559,4 +1566,63 @@ button:focus-visible,
   font-weight: 400;
   opacity: 0.85;
   white-space: normal;
+}
+
+
+/* ============================================================
+   Case verdict badge — the word, not just the colour
+   ============================================================
+   QMetry labels every row with its verdict in text; the console now does the
+   same so a tester can SCAN for "Not Executed" instead of decoding hues. Sits
+   on the id's line so the case name keeps its own two lines. */
+.case-row-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  width: 100%;
+  min-width: 0;
+}
+
+.case-badge {
+  flex: none;
+  font-family: var(--mono);
+  font-size: 9px;
+  line-height: 1;
+  letter-spacing: 0.02em;
+  padding: 3px 5px;
+  border-radius: 3px;
+  white-space: nowrap;
+  /* Neutral default so an unmapped future verdict is still legible. */
+  background: rgba(255, 255, 255, 0.16);
+  color: var(--white);
+}
+
+/* QMetry verdicts keep QMetry's own colours, so the console agrees with the
+   QMetry site. Live-run status uses the Duke palette. */
+.case-badge.qm-pass    { background: var(--qm-pass);    color: var(--white); }
+.case-badge.qm-fail    { background: var(--qm-fail);    color: var(--white); }
+.case-badge.qm-blocked { background: var(--qm-blocked); color: var(--ink); }
+.case-badge.qm-wip     { background: var(--qm-wip);     color: var(--ink); }
+.case-badge.qm-notrun  { background: var(--qm-notrun);  color: var(--white); }
+
+.case-badge.pass    { background: var(--green); color: var(--white); }
+.case-badge.fail    { background: var(--red);   color: var(--white); }
+.case-badge.blocked { background: var(--amber); color: var(--white); }
+.case-badge.running { background: var(--white); color: var(--navy); }
+
+/* "Stopped hh:mm:ss" pill in the Live stage head, shown after an emergency
+   stop until the next run starts. A cancelled case reads as `blocked` in the
+   tape — the same as a genuine obstruction — so this says plainly that the
+   halt was deliberate. Amber, not red: the run was stopped on purpose, it did
+   not fail. */
+.stage-head-stopped {
+  font-family: var(--mono);
+  font-size: 11px;
+  padding: 5px 9px;
+  border-radius: 999px;
+  background: rgba(246, 195, 66, 0.18);
+  border: 1px solid var(--amber);
+  color: var(--ink);
+  white-space: nowrap;
 }

@@ -829,10 +829,24 @@ FastAPI app. Endpoints (exactly what the frontend calls — see FRONTEND.md):
   `task.cancel()` the per-run endpoint uses, so per-case `finally` blocks and
   the manual-mark bookkeeping keep working. Returns
   `{"cancelled": [run_id, …]}`; idempotent, 200 with `[]` when idle, never 404.
-  Deliberately does NOT close orphaned browsers, clear stranded `running`
-  marks, or latch a re-arm gate (scoped out 2026-08-26): it is a stop, not a
-  safety interlock. A cancelled HEADED full-plan run can leave a Chromium
-  window open.
+  **Now closes the browser (2026-09-01).** The orphaned-Chromium limitation
+  scoped out on 2026-08-26 turned out to be a real, reproducible bug on ONE
+  specific path, not an inherent cost: `/stop` is idempotent by design and
+  cancels every task that is not done — and a task sitting in its `finally` is
+  not done. So a SECOND press (what a worried tester does) delivered a second
+  `CancelledError` that landed on the `close_session()` await in
+  `_execute_case`'s `finally`; being a `BaseException` it slipped past the
+  `except Exception` there, and the close was abandoned mid-flight. A single
+  press was always fine — one cancel raises once and the finally then proceeds
+  normally. The close is now `asyncio.shield`ed so it runs to completion even
+  when the await of it is interrupted (verified both ways: the test times out
+  without the shield). Stranded `running` marks were already handled — both
+  cancel paths call `_finalize_cancelled_run` and the Manual path writes a
+  "cancelled by tester" note. Still no re-arm latch.
+  A cancelled step now also carries `STOPPED_BY_TESTER` as its `evaluation`,
+  so the tape says the halt was deliberate — `blocked` alone is ambiguous,
+  being also what a genuine obstruction looks like. An evaluation the
+  evaluator already wrote is never overwritten.
 - `GET /cycles?q=&start=&limit=` → one page of test runs `{id, key, name}`.
 - `GET /testcases?q=&start=&limit=` → one page of the project's test case library
   `{id, key, name, plan_key}`. Both push `q` down to QMetry and return

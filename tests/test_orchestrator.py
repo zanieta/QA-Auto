@@ -2439,3 +2439,67 @@ async def test_clean_execution_blocked_verdict_consumes_one_attempt():
     assert step.evaluation.endswith("NEEDS HUMAN REVIEW (1 agent attempts)")
     assert azure.translate_step.await_count == 1
     assert azure.evaluate_result.await_count == 1
+
+
+# ---------- the emergency stop must still close the browser -----------------
+
+
+@pytest.mark.asyncio
+async def test_stop_pressed_twice_still_closes_the_browser():
+    """Two Stop presses used to leave an orphaned Chromium window.
+
+    Mechanism, verified by probe: `POST /stop` is idempotent BY DESIGN and
+    cancels every task that is not done — and a task sitting in its `finally`
+    is not done. So a second press (what a worried tester does) delivers a
+    second CancelledError, and it lands on the `close_session()` await in
+    `_execute_case`'s finally. CancelledError is a BaseException, so the
+    `except Exception` there never saw it and the close was abandoned
+    mid-flight, stranding a HEADED run's window on the desktop.
+
+    ONE press is fine and always was — a single cancel raises once, and the
+    finally's await then proceeds normally. Only the re-cancel breaks it, which
+    is why this test cancels twice. The close is shielded now, so it runs to
+    completion even though our await of it is interrupted.
+    """
+    closed = asyncio.Event()
+    cases = [{"id": "A", "name": "Alpha", "steps": [
+        {"action": "Click go", "expected": "Loaded"},
+    ]}]
+
+    browser = _fake_browser()
+
+    async def _slow_close():
+        # A real close suspends (Playwright IPC). That suspension is where the
+        # second cancellation lands.
+        await asyncio.sleep(0.05)
+        closed.set()
+
+    browser.close_session = AsyncMock(side_effect=_slow_close)
+
+    started = asyncio.Event()
+
+    async def _hang(*a, **kw):
+        started.set()
+        await asyncio.sleep(60)  # keep the run in-flight so we can cancel it
+
+    azure = _fake_azure()
+    azure.translate_step = AsyncMock(side_effect=_hang)
+
+    orch = Orchestrator(
+        azure=azure,
+        browser_factory=lambda: browser,
+        case_source=FakeCaseSource({"key": "X", "name": "x"}, cases),
+        on_update=lambda s: None,
+    )
+    task = asyncio.create_task(orch.run_single_case("A"))
+    await asyncio.wait_for(started.wait(), timeout=5)
+
+    task.cancel()                  # first Stop press
+    await asyncio.sleep(0.01)      # the run is now inside its finally, closing
+    task.cancel()                  # second Stop press — lands on the close
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    # The shielded close survives both cancellations.
+    await asyncio.wait_for(closed.wait(), timeout=5)
+    browser.close_session.assert_awaited()

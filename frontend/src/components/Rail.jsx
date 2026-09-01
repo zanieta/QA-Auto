@@ -168,10 +168,11 @@ export default function Rail({
             )}
             {cases.map((c) => {
               const picked = !selectable || selectedIds?.has(c.id)
-              const { cls: statusCls, label: statusLabel } = caseStatus(
-                c.status,
-                c.execution_result,
-              )
+              const {
+                cls: statusCls,
+                label: statusLabel,
+                badge: statusBadge,
+              } = caseStatus(c.status, c.execution_result)
               const row = (
                 <button
                   type="button"
@@ -183,7 +184,12 @@ export default function Rail({
                   title={`${c.id} — ${c.name} · ${statusLabel}`}
                   aria-label={`${c.id} ${c.name}. ${statusLabel}`}
                 >
-                  <span className="case-row-id">{c.id}</span>
+                  <span className="case-row-head">
+                    <span className="case-row-id">{c.id}</span>
+                    {statusBadge && (
+                      <span className={`case-badge ${statusCls}`}>{statusBadge}</span>
+                    )}
+                  </span>
                   <span className="case-row-name">{c.name}</span>
                 </button>
               )
@@ -234,10 +240,27 @@ export default function Rail({
 // (a faint hairline), because a never-run case and a not-yet-run case read the
 // same to a tester about to press Run.
 const QMETRY_STRIPE = {
-  Pass: 'qm-pass',
-  Fail: 'qm-fail',
-  Blocked: 'qm-blocked',
-  'Work In Progress': 'qm-wip',
+  Pass: { cls: 'qm-pass', badge: 'Pass' },
+  Fail: { cls: 'qm-fail', badge: 'Fail' },
+  Blocked: { cls: 'qm-blocked', badge: 'Blocked' },
+  // Shortened: the rail is narrow and "Work In Progress" would wrap.
+  'Work In Progress': { cls: 'qm-wip', badge: 'WIP' },
+  // Not Executed now has a rule of its own (2026-09-01). It used to fall
+  // through to the `queued` look on the reasoning that a never-run case and a
+  // not-yet-run case read the same to a tester about to press Run. That was
+  // wrong for the job people actually do: finding which cases have never been
+  // executed in a 92-case cycle. QMetry labels it explicitly, so we do too.
+  'Not Executed': { cls: 'qm-notrun', badge: 'Not Executed' },
+}
+
+// Live run status -> the badge word. `queued` gets none: an untouched case in
+// this session has nothing to report, and its QMetry verdict (below) is the
+// more useful thing to show.
+const LIVE_BADGE = {
+  pass: 'Pass',
+  fail: 'Fail',
+  blocked: 'Blocked',
+  running: 'Running',
 }
 
 // A case's status as a row class + a spoken label. The class drives the 4px
@@ -249,11 +272,13 @@ const QMETRY_STRIPE = {
 // case falls back to the QMetry verdict.
 function caseStatus(status, qmetry) {
   if (status === 'queued' && qmetry) {
-    const cls = QMETRY_STRIPE[qmetry.name]
-    if (cls) return { cls, label: `Last QMetry result: ${qmetry.name}` }
-    // A known-but-unmapped verdict (today only "Not Executed") still says so
-    // out loud, even though it looks identical to a queued case.
-    return { cls: 'queued', label: `Last QMetry result: ${qmetry.name}` }
+    const hit = QMETRY_STRIPE[qmetry.name]
+    const label = `Last QMetry result: ${qmetry.name}`
+    if (hit) return { cls: hit.cls, label, badge: hit.badge }
+    // An unmapped verdict QMetry might add later: say the word rather than
+    // silently showing nothing, but keep the neutral queued colour.
+    return { cls: 'queued', label, badge: qmetry.name }
   }
-  return { cls: status || 'queued', label: status || 'queued' }
+  const s = status || 'queued'
+  return { cls: s, label: s, badge: LIVE_BADGE[s] ?? null }
 }

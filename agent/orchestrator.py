@@ -558,8 +558,26 @@ class Orchestrator:
                     break
         finally:
             if browser is not None:
+                # SHIELDED on purpose (2026-09-01). The emergency stop cancels
+                # this task, which raises CancelledError at the next await —
+                # and this close IS the next await. CancelledError is a
+                # BaseException, so `except Exception` never saw it: the close
+                # was abandoned mid-flight and a HEADED run left an orphaned
+                # Chromium window on the tester's desktop. shield() lets the
+                # close run to completion even though our await of it is
+                # interrupted, so the window still goes away.
+                closing = asyncio.shield(browser.close_session())
                 try:
-                    await browser.close_session()
+                    await closing
+                except asyncio.CancelledError:
+                    # We were cancelled while closing. The shielded close is a
+                    # task of its own and keeps running, so the browser still
+                    # shuts down; re-raise so the cancellation is not swallowed.
+                    log.info(
+                        "Cancelled while closing the browser for %s — the close "
+                        "continues in the background", case_id,
+                    )
+                    raise
                 except Exception:
                     log.warning("Failed to close browser cleanly for case %s", case_id)
 
