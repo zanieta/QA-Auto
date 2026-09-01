@@ -50,7 +50,7 @@ MAX_TABLE_CELL_CHARS = 40
 # Collect visible interactive elements, tag each with data-agent-ref="eN",
 # and return [{ref, tag, role, name}]. Capped at MAX_SNAPSHOT_ELEMENTS.
 _SNAPSHOT_JS = """
-(maxN) => {
+({maxN, maxHidden}) => {
   const sels = ['button','a[href]','input','textarea','select',
     '[role=button]','[role=link]','[role=tab]','[role=menuitem]',
     '[role=checkbox]','[role=radio]'];
@@ -129,7 +129,56 @@ _SNAPSHOT_JS = """
               name: label + (cb.checked ? ' (checked)' : ' (unchecked)')});
     if (out.length >= maxN) return out;
   }
-  return out;
+  // ---- hidden children -------------------------------------------------
+  // Interactive elements PRESENT in the DOM but hidden — a collapsed submenu,
+  // a pre-rendered modal. They get no ref (not clickable yet); each names the
+  // visible control that toggles it, which is the model's only move. An
+  // element whose toggle cannot be resolved is skipped, never emitted with an
+  // empty parent_ref: Python drops those anyway, and a hint nobody can act on
+  // is worse than silence.
+  const hidden = [];
+  for (const sel of sels) {
+    if (hidden.length >= maxHidden) break;
+    for (const el of document.querySelectorAll(sel)) {
+      if (hidden.length >= maxHidden) break;
+      if (seen.has(el) || tagged.has(el)) continue;
+      seen.add(el);
+      const r = el.getBoundingClientRect();
+      const st = window.getComputedStyle(el);
+      if (r.width > 0 && r.height > 0 &&
+          st.visibility !== 'hidden' && st.display !== 'none') continue;
+      const name = (el.getAttribute('aria-label') || el.getAttribute('title') ||
+        el.textContent || '').trim();
+      if (!name) continue;
+      // The nearest ancestor actually doing the hiding. If there is none, the
+      // element is hidden for some other reason (0x0, clipped, off-screen) and
+      // there is no toggle to name.
+      let hider = null;
+      for (let box = el.parentElement; box && box !== document.body; box = box.parentElement) {
+        const bs = window.getComputedStyle(box);
+        if (bs.display === 'none' || bs.visibility === 'hidden') { hider = box; break; }
+      }
+      if (!hider) continue;
+      // The toggle is the nearest ALREADY-TAGGED (therefore visible) control
+      // preceding that container: walk previous siblings, then climb.
+      let toggle = null;
+      for (let node = hider; node && node !== document.body && !toggle; node = node.parentElement) {
+        for (let sib = node.previousElementSibling; sib && !toggle; sib = sib.previousElementSibling) {
+          if (sib.hasAttribute('data-agent-ref')) toggle = sib;
+          else toggle = sib.querySelector('[data-agent-ref]');
+        }
+      }
+      if (!toggle) continue;
+      hidden.push({ref: null, hidden: true,
+                   parent_ref: toggle.getAttribute('data-agent-ref'),
+                   parent: ((toggle.innerText || toggle.getAttribute('aria-label') ||
+                             '').trim()).slice(0, 40),
+                   tag: el.tagName.toLowerCase(),
+                   role: el.getAttribute('role') || '',
+                   name: name.slice(0, 80)});
+    }
+  }
+  return out.concat(hidden);
 }
 """
 

@@ -243,6 +243,15 @@ async def test_snapshot_elements_passes_both_caps_to_the_page():
 
 
 @pytest.mark.asyncio
+async def test_snapshot_js_destructures_both_caps():
+    """The JS takes ONE argument object — Playwright passes a single value —
+    and must read both budgets out of it, or the hidden pass is unbounded."""
+    js = browser_mod._SNAPSHOT_JS
+    assert "({maxN, maxHidden})" in js
+    assert "maxHidden" in js.split("// ---- hidden children")[1]
+
+
+@pytest.mark.asyncio
 async def test_execute_action_resolves_ref_to_data_attr_selector():
     s, page = _session_with_fake_page()
     await s.execute_action({"action": "click", "ref": "e2", "value": None})
