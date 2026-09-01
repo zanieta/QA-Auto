@@ -230,7 +230,7 @@ backend therefore handles three query shapes; the frontend just sends `?q=`:
   refer to cases by the whole key) above the name, which is clamped to **two
   lines**. Not one line: run names share long prefixes ("Sous Chef Cloud
   vX.X.X — …"), so single-line truncation makes different runs read identically.
-  Full `key — name` in the row's `title`. No status dot: neither runs nor library
+  Full `key — name` in the row's `title`. No status stripe: neither runs nor library
   cases have a marking status until opened.
 - **Foot** (`.browser-foot`): `N of TOTAL` in mono on the left, a `Load more`
   button on the right when more remain. Never silently truncate — the count is
@@ -252,9 +252,28 @@ backend therefore handles three query shapes; the frontend just sends `?q=`:
   a name; it arrives as `summary` when the query asks for the field. Below it a
   thin progress bar (white fill on translucent track) with `done / total` and `%`
   in mono.
-- **Test case list**: each row = status dot + ID (mono) + name (truncated). Status
-  dot states: `queued` (dashed border), `run` (pulsing white dot), `pass` (solid
-  green ✓), `fail` (solid red ✕). Active row gets a translucent white background.
+- **Test case list**: each row = a 4px **status stripe** down its left edge + ID
+  (mono) + name (truncated). Stripe states: `queued` (faint hairline), `running`
+  (pulsing white), `pass` (green), `fail` (red), `blocked` (amber). Active row
+  gets a translucent white background.
+
+  **Why a stripe, not a dot** (changed 2026-09-01): the old indicator was a
+  10px circle carrying an 8px ✓/✕/! glyph, which is illegible at that size — a
+  tester perceived only a coloured speck. The stripe drops the glyph, reads as
+  a scannable column of colour down the whole cycle, and costs no horizontal
+  room, so case names keep their width.
+
+  The stripe is the wrapper's `border-left`, never a child of the row
+  `<button>`: it must sit at the row's true left edge, outside the Live tab's
+  checkbox, and line up whether or not one is rendered. The border is always
+  present at full 4px width and only its COLOUR changes, so rows never shift
+  horizontally as a run resolves them. `running` animates
+  `border-left-color` (`@keyframes stripe-pulse`), not the wrapper's opacity —
+  the latter would fade the row's text along with the stripe.
+
+  **A stripe is colour-only**, so the status also rides on the row button's
+  `title` and `aria-label` (`"<id> <name>. <status>"`). That is the only
+  non-visual carrier of the status; do not remove it.
 - **Case selection (Live run tab only)**: each row carries a checkbox, **all
   ticked** when a cycle opens, so pressing Run without touching anything
   behaves exactly as it did before. The section label shows `3 of 4` with an
@@ -278,18 +297,18 @@ backend therefore handles three query shapes; the frontend just sends `?q=`:
   (`queued` for ones the run didn't cover). The tape stays the view of the
   run; the rail stays the view of the plan.
 
-#### QMetry status dots (Live run tab only)
-Before a run starts, each case row's status dot shows that case's **last
+#### QMetry status stripes (Live run tab only)
+Before a run starts, each case row's status stripe shows that case's **last
 QMetry verdict**, in QMetry's own colours, so the console agrees with what a
 tester sees on the QMetry site:
 
-| QMetry result | dot | token |
+| QMetry result | stripe | token |
 |---|---|---|
-| Pass | green ✓ | `--qm-pass` `#14892C` |
-| Fail | red ✕ | `--qm-fail` `#D04437` |
-| Blocked | grey ! | `--qm-blocked` `#CCCCCC` |
-| Work In Progress | amber · | `--qm-wip` `#F6C342` |
-| Not Executed | *falls through to the `queued` look* (dashed outline) | — |
+| Pass | green | `--qm-pass` `#14892C` |
+| Fail | red | `--qm-fail` `#D04437` |
+| Blocked | grey | `--qm-blocked` `#CCCCCC` |
+| Work In Progress | amber | `--qm-wip` `#F6C342` |
+| Not Executed | *falls through to the `queued` look* (faint hairline) | — |
 
 Mapped by result **name**, never by the hex the API returns per case: an
 inline hex would break the "derive every colour from tokens" rule, and would
@@ -621,7 +640,7 @@ appears in this payload.
 
 Each case in `GET /manual/{plan}` also carries
 `execution_result: {name, color} | null` — the case's last QMetry verdict, for
-the Live tab's status dots (see "QMetry status dots" above). It rides on the
+the Live tab's status stripes (see "QMetry status stripes" above). It rides on the
 existing cycle case-search response, so it costs no extra QMetry call.
 
 ### Endpoints the Manual tab calls

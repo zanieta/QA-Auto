@@ -275,6 +275,11 @@ button:focus-visible,
   align-items: center;
   gap: 8px;
   padding-left: 8px;
+  /* Status stripe. 4px of solid colour at the row's left edge, so a whole
+     cycle's health reads as one scannable column. The border is always
+     present at full width — only its colour changes with the status class —
+     otherwise rows would shift horizontally as a run resolves them. */
+  border-left: 4px solid transparent;
 }
 
 .case-row-wrap .case-row { flex: 1; min-width: 0; }
@@ -326,54 +331,44 @@ button:focus-visible,
   flex: 1;
 }
 
-.case-dot {
-  width: 10px;
-  height: 10px;
-  border-radius: 50%;
-  flex-shrink: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 8px;
+/* Status stripe colours. Live run status uses the Duke palette; QMetry
+   verdicts keep QMetry's OWN hex tokens, so the console agrees with what a
+   tester sees on the QMetry site. Both are tokens — never an inline hex from
+   the API response. "Not Executed" deliberately has no rule of its own: it
+   falls through to .queued (a faint hairline), because a never-run case and a
+   not-yet-run case are the same thing to a tester about to press Run. */
+.case-row-wrap.qm-pass    { border-left-color: var(--qm-pass); }
+.case-row-wrap.qm-fail    { border-left-color: var(--qm-fail); }
+.case-row-wrap.qm-blocked { border-left-color: var(--qm-blocked); }
+.case-row-wrap.qm-wip     { border-left-color: var(--qm-wip); }
+
+.case-row-wrap.pass    { border-left-color: var(--green); }
+.case-row-wrap.fail    { border-left-color: var(--red); }
+.case-row-wrap.blocked { border-left-color: var(--amber); }
+
+/* Queued/untested: a hairline rather than nothing, so the column still reads
+   as a column. Keeps the 4px box so the row never shifts when it resolves. */
+.case-row-wrap.queued {
+  border-left-color: rgba(255, 255, 255, 0.22);
 }
 
-/* QMetry's last verdict for a case, shown on the Live tab BEFORE a run
-   starts. "Not Executed" deliberately has no rule: it falls through to
-   .case-dot.queued (a dashed outline, i.e. clear), because a never-run case
-   and a not-yet-run case are the same thing to a tester about to press Run. */
-.case-dot.qm-pass    { background: var(--qm-pass);    color: var(--white); }
-.case-dot.qm-fail    { background: var(--qm-fail);    color: var(--white); }
-.case-dot.qm-blocked { background: var(--qm-blocked); color: var(--ink); }
-.case-dot.qm-wip     { background: var(--qm-wip);     color: var(--ink); }
-
-.case-dot.queued {
-  border: 1px dashed rgba(255, 255, 255, 0.5);
-  background: transparent;
+/* Pulses the STRIPE only. An opacity animation on the wrapper would fade the
+   row's text along with it, which is why this animates border-colour instead. */
+.case-row-wrap.running {
+  border-left-color: var(--white);
+  animation: stripe-pulse 1.4s ease-in-out infinite;
 }
 
-.case-dot.running {
-  background: var(--white);
-  animation: pulse 1.4s ease-in-out infinite;
-}
-
-.case-dot.pass {
-  background: var(--green);
-  color: var(--white);
-}
-
-.case-dot.fail {
-  background: var(--red);
-  color: var(--white);
-}
-
-.case-dot.blocked {
-  background: var(--amber);
-  color: var(--white);
-}
-
+/* Still used by .status-dot.running and .foot-status-dot.running (the tape
+   and the footer) — do not remove with the rail's stripe. */
 @keyframes pulse {
   0%, 100% { opacity: 1; transform: scale(1); }
   50%      { opacity: 0.5; transform: scale(0.85); }
+}
+
+@keyframes stripe-pulse {
+  0%, 100% { border-left-color: rgba(255, 255, 255, 1); }
+  50%      { border-left-color: rgba(255, 255, 255, 0.35); }
 }
 
 /* ============================================================

@@ -168,13 +168,21 @@ export default function Rail({
             )}
             {cases.map((c) => {
               const picked = !selectable || selectedIds?.has(c.id)
+              const { cls: statusCls, label: statusLabel } = caseStatus(
+                c.status,
+                c.execution_result,
+              )
               const row = (
                 <button
                   type="button"
                   className={`case-row ${activeId === c.id ? 'active' : ''}`}
                   onClick={() => onSelectCase?.(c.id)}
+                  // The stripe is colour-only, so the status has to reach a
+                  // screen reader (and anyone who cannot separate the hues)
+                  // some other way — it rides on the row's own label.
+                  title={`${c.id} — ${c.name} · ${statusLabel}`}
+                  aria-label={`${c.id} ${c.name}. ${statusLabel}`}
                 >
-                  <CaseDot status={c.status} qmetry={c.execution_result} />
                   <span className="case-row-id">{c.id}</span>
                   <span className="case-row-name">{c.name}</span>
                 </button>
@@ -185,7 +193,11 @@ export default function Rail({
               // real checkbox BESIDE the button, rather than inside it.
               if (!selectable) {
                 return (
-                  <div key={c.id} role="listitem" className="case-row-wrap">
+                  <div
+                    key={c.id}
+                    role="listitem"
+                    className={`case-row-wrap ${statusCls}`}
+                  >
                     {row}
                   </div>
                 )
@@ -194,7 +206,7 @@ export default function Rail({
                 <div
                   key={c.id}
                   role="listitem"
-                  className={`case-row-wrap${picked ? '' : ' unpicked'}`}
+                  className={`case-row-wrap ${statusCls}${picked ? '' : ' unpicked'}`}
                 >
                   <input
                     type="checkbox"
@@ -215,40 +227,33 @@ export default function Rail({
   )
 }
 
-// QMetry result name -> {class, symbol}. Mapped by NAME, not by the hex the
-// API returns per case: the colour belongs in the token system, and a QMetry
-// admin's config must not be able to repaint the console. "Not Executed" is
-// absent on purpose — it falls through to the `queued` look (dashed outline),
-// because a never-run case and a not-yet-run case read the same to a tester
-// about to press Run.
-const QMETRY_DOT = {
-  Pass: { cls: 'qm-pass', symbol: '✓' },
-  Fail: { cls: 'qm-fail', symbol: '✕' },
-  Blocked: { cls: 'qm-blocked', symbol: '!' },
-  'Work In Progress': { cls: 'qm-wip', symbol: '·' },
+// QMetry result name -> the stripe class for that verdict. Mapped by NAME,
+// not by the hex the API returns per case: the colour belongs in the token
+// system, and a QMetry admin's config must not be able to repaint the console.
+// "Not Executed" is absent on purpose — it falls through to the `queued` look
+// (a faint hairline), because a never-run case and a not-yet-run case read the
+// same to a tester about to press Run.
+const QMETRY_STRIPE = {
+  Pass: 'qm-pass',
+  Fail: 'qm-fail',
+  Blocked: 'qm-blocked',
+  'Work In Progress': 'qm-wip',
 }
 
-function CaseDot({ status, qmetry }) {
-  // Live run status always wins once a run has touched this case: what is
-  // happening now outranks what QMetry recorded last time. Only a still-queued
-  // case falls back to the QMetry verdict.
-  const qm = status === 'queued' && qmetry ? QMETRY_DOT[qmetry.name] : null
-  if (qm) {
-    return (
-      <span
-        className={`case-dot ${qm.cls}`}
-        aria-label={`QMetry: ${qmetry.name}`}
-        title={`Last QMetry result: ${qmetry.name}`}
-      >
-        {qm.symbol}
-      </span>
-    )
+// A case's status as a row class + a spoken label. The class drives the 4px
+// left-edge stripe (see .case-row-wrap in tokens.css); the label is the only
+// non-visual carrier of the status, since the stripe is pure colour.
+//
+// Live run status ALWAYS wins once a run has touched this case: what is
+// happening now outranks what QMetry recorded last time. Only a still-queued
+// case falls back to the QMetry verdict.
+function caseStatus(status, qmetry) {
+  if (status === 'queued' && qmetry) {
+    const cls = QMETRY_STRIPE[qmetry.name]
+    if (cls) return { cls, label: `Last QMetry result: ${qmetry.name}` }
+    // A known-but-unmapped verdict (today only "Not Executed") still says so
+    // out loud, even though it looks identical to a queued case.
+    return { cls: 'queued', label: `Last QMetry result: ${qmetry.name}` }
   }
-  const symbol =
-    status === 'pass' ? '✓' : status === 'fail' ? '✕' : status === 'blocked' ? '!' : ''
-  return (
-    <span className={`case-dot ${status}`} aria-label={status}>
-      {symbol}
-    </span>
-  )
+  return { cls: status || 'queued', label: status || 'queued' }
 }
