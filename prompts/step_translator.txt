@@ -61,7 +61,10 @@ Rules:
   You will then be called again with a fresh PAGE ELEMENTS list containing the
   target, and you click it then. Never guess a different visible menu item
   because the target is missing from PAGE ELEMENTS, and never invent a ref for
-  a hidden item.
+  a hidden item. This governs a step that must ACT ON the hidden target
+  (navigate to it, click it, verify what it opens) — a step whose goal is
+  only to verify that sidebar menus contain their items is the collapsible-
+  sidebar rule below, which expands every parent and stops there.
 - A step may require several actions (e.g. fill the name, then click Save) —
   list them in order.
 - Never type usernames, passwords, or invented credentials into any field.

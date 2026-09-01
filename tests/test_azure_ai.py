@@ -431,6 +431,35 @@ async def test_translate_step_omits_the_hidden_block_when_there_are_none():
 
 
 @pytest.mark.asyncio
+async def test_translate_step_with_only_hidden_elements_omits_page_elements_header():
+    """When nothing is visible, PAGE ELEMENTS never appears — visible is empty,
+    so the `if visible:` guard never fires the header. HIDDEN ELEMENTS still
+    renders its entry. This asserts the code's actual behaviour, not a guess
+    at what it \"should\" do."""
+    client = _Client(endpoint="https://x", api_key="k", deployment="gpt-4o")
+    captured = {}
+
+    async def fake_chat(messages, **kw):
+        captured["messages"] = messages
+        return _json.dumps({"actions": [], "done": True})
+
+    client._chat = fake_chat  # type: ignore
+    await client.translate_step(
+        "Go to Recipe submenu and open the target item",
+        app_context="url: /x",
+        elements=[
+            {"ref": None, "hidden": True, "parent_ref": "e7", "parent": "Recipe",
+             "tag": "a", "role": "", "name": "Edit Inventory"},
+        ],
+    )
+    sent = captured["messages"][-1]["content"]
+    assert "PAGE ELEMENTS" not in sent
+    assert "HIDDEN ELEMENTS" in sent
+    assert "Edit Inventory" in sent
+    assert "e7" in sent
+
+
+@pytest.mark.asyncio
 async def test_translate_step_works_without_elements():
     client = _Client(endpoint="https://x", api_key="k", deployment="gpt-4o")
 
