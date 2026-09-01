@@ -241,6 +241,48 @@ async def test_hidden_pass_is_not_dead_code(browser):
     assert len(_hidden(out)) > 0, "hidden pass returned nothing - it is dead code again"
 
 
+async def test_hidden_pass_survives_a_full_visible_cap(browser):
+    """Regression test for the critical finding: hitting the visible cap
+    (MAX_SNAPSHOT_ELEMENTS) used to `return` out of the WHOLE function, so
+    the hidden-children pass never ran at all on any page with that many
+    visible controls -- exactly the shape of a real Users/Equipment/Recipes
+    list page (sidebar anchors + N rows of pencil/trash/checkbox controls).
+
+    Builds a page with well over MAX_SNAPSHOT_ELEMENTS visible links AND a
+    collapsed nav submenu, and asserts the hidden entry still comes back.
+
+    The filler is deliberately `a[href]` (not `<button>`): `_SNAPSHOT_JS`
+    walks selectors in document order WITHIN each selector group, and
+    `button` is scanned before `a[href]` in `sels` -- so a page of buttons
+    would exhaust the cap before ever reaching the Recipe anchor, and the
+    hidden entry's toggle (which must itself be a TAGGED visible element)
+    could never resolve. Using links, with Recipe first in document order,
+    guarantees Recipe is tagged before the cap is hit.
+    """
+    fillers = "".join(f'<a href="#">Row {i}</a>' for i in range(MAX_SNAPSHOT_ELEMENTS + 20))
+    html = f"""
+    <nav>
+      <li><a href="#">Recipe</a>
+        <ul style="display:none">
+          <li><a href="/inv">Edit Inventory</a></li>
+        </ul>
+      </li>
+    </nav>
+    {fillers}
+    """
+    out = await _snapshot_for(browser, html)
+    visible = [e for e in out if e.get("ref")]
+    assert len(visible) == MAX_SNAPSHOT_ELEMENTS, (
+        f"expected the visible pass to stop exactly at the cap, got {len(visible)}"
+    )
+    hidden = _hidden(out)
+    entry = _by_name(hidden, "Edit Inventory")
+    assert entry is not None, (
+        "hidden pass produced nothing once the visible cap was hit -- "
+        "the fall-through regressed"
+    )
+
+
 async def test_caps_are_forwarded_to_a_real_page(browser):
     """Sanity check that MAX_SNAPSHOT_ELEMENTS / MAX_HIDDEN_ELEMENTS reach
     the real page.evaluate() call without raising -- a scalar-vs-object

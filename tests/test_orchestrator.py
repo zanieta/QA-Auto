@@ -1206,6 +1206,66 @@ async def test_same_page_with_nothing_revealed_keeps_the_fast_path():
 
 
 @pytest.mark.asyncio
+async def test_settle_awaited_before_reveal_decision_snapshot():
+    """Load-bearing on the settle placed BEFORE the reveal-decision snapshot.
+
+    Without it, a slide-open submenu can still have zero-height children the
+    instant the decision snapshot fires (its triggering click got no
+    settle/frame of its own — it was the last action of a same-page round),
+    so `snapshot_elements` would intermittently treat the revealed child as
+    not-yet-visible and miss the reveal. This asserts ORDER, not just that
+    `wait_for_settle` was called somewhere: a settle awaited after the
+    decision (e.g. only the "reveal happened, capture a frame" settle later
+    in the same round) would satisfy a bare call-count check while leaving
+    the actual bug in place.
+    """
+    cases = [{"id": "A", "name": "Alpha", "steps": [
+        {"action": "Go to Recipe > Edit Inventory", "expected": "Inventory page"},
+    ]}]
+    azure = _fake_azure(
+        translate_side_effect=[
+            [{"action": "click", "ref": "e7", "value": None}],   # click Recipe (no nav)
+            [{"action": "click", "ref": "e9", "value": None}],   # click the revealed child
+            [],                                                  # done
+        ],
+        evaluate_side_effect=[{"status": "pass", "reason": "on the inventory page"}],
+    )
+    browser = _fake_browser()
+    order: list[str] = []
+    snapshots = [
+        [{"ref": "e7", "tag": "a", "role": "", "name": "Recipe"}],
+        [{"ref": "e7", "tag": "a", "role": "", "name": "Recipe"},
+         {"ref": "e9", "tag": "a", "role": "", "name": "Edit Inventory"}],
+        [{"ref": "e9", "tag": "a", "role": "", "name": "Edit Inventory"}],
+    ]
+
+    async def _settle(*a, **k):
+        order.append("settle")
+
+    async def _snap(*a, **k):
+        order.append("snapshot")
+        return snapshots.pop(0)
+
+    browser.wait_for_settle = AsyncMock(side_effect=_settle)
+    browser.snapshot_elements = AsyncMock(side_effect=_snap)
+    orch = Orchestrator(
+        azure=azure,
+        browser_factory=lambda: browser,
+        case_source=FakeCaseSource({"key": "X", "name": "x"}, cases),
+        on_update=lambda s: None,
+    )
+    state = await orch.run_single_case("A")
+    step = state.test_cases[0].steps[0]
+    assert step.status == "pass"
+    assert order[0] == "snapshot", f"expected round 0's snapshot first, got {order}"
+    idx_second_snapshot = order.index("snapshot", 1)
+    assert "settle" in order[1:idx_second_snapshot], (
+        f"expected a settle awaited before the reveal-decision snapshot, "
+        f"got order={order}"
+    )
+
+
+@pytest.mark.asyncio
 async def test_expand_then_collapse_terminates():
     """Clicking a toggle twice collapses it again, which adds no new name, so
     the loop must end rather than oscillate."""
@@ -1396,6 +1456,47 @@ async def test_failed_snapshot_does_not_masquerade_as_a_real_no_reveal_observati
     # The step got its second round instead of being cut short by a
     # snapshot failure masquerading as "nothing revealed".
     assert azure.translate_step.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_reveal_continuations_stop_at_the_cap_not_max_rounds():
+    """Concrete tail from review: on a Logs-style page, a row control's name
+    is anchored to the row's first cell (a timestamp), so ANY sort/page/
+    filter click renames it and every round's snapshot looks like a fresh
+    reveal — the broad reveal rule would otherwise turn a 1-round step into
+    `max_rounds` (6). A page that reveals something new EVERY round must
+    still stop after the cap (2 continuations = 3 translate calls total),
+    not run out the clock at max_rounds."""
+    cases = [{"id": "A", "name": "Alpha", "steps": [
+        {"action": "Sort the Logs table", "expected": "Sorted"},
+    ]}]
+    azure = _fake_azure(
+        translate_side_effect=[
+            [{"action": "click", "ref": "e1", "value": None}],
+            [{"action": "click", "ref": "e1", "value": None}],
+            [{"action": "click", "ref": "e1", "value": None}],
+        ],
+        evaluate_side_effect=[{"status": "pass", "reason": "ok"}],
+    )
+    browser = _fake_browser()
+    browser.snapshot_elements = AsyncMock(side_effect=[
+        [{"ref": "e1", "tag": "a", "role": "", "name": "Row 2026-01-01"}],
+        [{"ref": "e1", "tag": "a", "role": "", "name": "Row 2026-01-02"}],
+        [{"ref": "e1", "tag": "a", "role": "", "name": "Row 2026-01-03"}],
+        [{"ref": "e1", "tag": "a", "role": "", "name": "Row 2026-01-04"}],
+    ])
+    orch = Orchestrator(
+        azure=azure,
+        browser_factory=lambda: browser,
+        case_source=FakeCaseSource({"key": "X", "name": "x"}, cases),
+        on_update=lambda s: None,
+    )
+    state = await orch.run_single_case("A")
+    step = state.test_cases[0].steps[0]
+    assert step.status == "pass"
+    # Round 0 (no reveal check) + 2 capped continuations = 3 translate calls,
+    # not max_rounds' worth.
+    assert azure.translate_step.await_count == 3
 
 
 # ----- PERFORMED ACTIONS reach the evaluator ---------------------------------

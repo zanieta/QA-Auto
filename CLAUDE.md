@@ -265,11 +265,18 @@ $env:HEADLESS="false"; .venv\Scripts\python.exe main.py --testcase IRHS-R-01
 .venv\Scripts\python.exe -m pytest tests/ -q                                 # full suite
 .venv\Scripts\python.exe -m pytest tests/test_orchestrator.py -v             # one module
 .venv\Scripts\python.exe -m pytest tests/test_azure_ai.py::test_retries_on_429_then_succeeds -v   # one test
+.venv\Scripts\python.exe -m pytest tests/ -q --ignore=tests/test_snapshot_js_dom.py  # skip the real-Chromium file
 ```
 
-Tests use mocked httpx + a mocked Playwright Page — they never hit the network or
-launch Chromium. A green suite is not proof that real Azure / Playwright work;
-that's what `main.py --dry-run` is for.
+Tests use mocked httpx + a mocked Playwright Page — they never hit the network.
+**One exception:** `tests/test_snapshot_js_dom.py` drives a REAL headless
+Chromium (still no network) to exercise the hidden-elements DOM heuristic in
+`agent/browser.py`'s `_SNAPSHOT_JS`, which a mocked `Page` cannot execute — see
+that module's docstring and the note under `agent/browser.py` below. It skips
+cleanly (never fails the suite) when Chromium isn't installed locally. To
+deselect it: `pytest tests/ -q --ignore=tests/test_snapshot_js_dom.py`. A green
+suite is otherwise not proof that real Azure / Playwright work against the
+real app; that's what `main.py --dry-run` is for.
 
 **Running a real QMetry case from the CLI needs `--push-qmetry` — that flag is
 what selects `QMetryCaseSource` (2026-09-01, discovered live).** Without it,
@@ -284,7 +291,18 @@ therefore no execution id, so `_push_to_qmetry` skips it (`skip <case
 id>: no QMetry execution id`); the flag's only effect there is switching the
 source. For a real cycle key, `--push-qmetry` really does write results, so
 don't add it to a real cycle run casually.
-`--testcase` can ONLY ever run a fixture case — the QMetry source is gated on `bool(args.plan)` (main.py:98), and `--plan`/`--testcase` are a mutually exclusive argparse group, so `--testcase <key> --push-qmetry` still silently runs `FixtureCaseSource` with no warning; `--plan TC:<case key>` is therefore the only CLI way to run one real case.
+`--testcase` can ONLY ever run a fixture case — the QMetry source is gated on
+`bool(args.plan)` (main.py:98), and `--plan`/`--testcase` are a mutually
+exclusive argparse group, so `--testcase <key> --push-qmetry` still silently
+runs `FixtureCaseSource` with no warning; `--plan TC:<case key>` is therefore
+the only CLI way to run one real case.
+
+A third trap: `main.py`'s push gate is `push_wanted = ... and not
+args.dry_run`, so `--plan TC:<key> --push-qmetry --dry-run` ALSO silently
+runs `FixtureCaseSource` — and `--dry-run` is this very file's own
+recommended debugging command (see "Single case / dry run for debugging"
+above). There is no combination of flags that both dry-runs AND selects the
+real QMetry source; drop `--dry-run` to actually exercise `QMetryCaseSource`.
 
 ---
 
@@ -672,12 +690,21 @@ appeared" for apps that render on demand instead (the name simply wasn't in
 the DOM at all last round). A genuine reveal also appends one screenshot
 frame — the action that caused it was the last of a same-page plan and so
 got none, and an open submenu is transient evidence the evaluator needs.
-Because the whole check reuses a snapshot the loop was taking anyway, a step
-that reveals nothing costs one cheap DOM query and **zero** extra model
-calls; only a real reveal pays a translate. The inner per-action execution
-loop is untouched by any of this. `max_rounds`=6 and `step_attempt_budget_s`
-remain the backstops, and expand-then-collapse converges on its own (the
-collapse adds no new name, so the next round breaks).
+**This is not free — correct the cost claim if you see it repeated.** Before
+this branch, a same-page round ended immediately on `if not navigated: break`
+and took no further snapshot at all. Now every same-page round pays a
+`wait_for_settle` (400ms fixed + up to 3s of networkidle) plus one DOM query
+before it can decide there was no reveal — typically ~+0.5s, worst case
+~+3.4s, and this is the common path across most of a run's ~450 steps, i.e.
+roughly +4 minutes on a full sweep. A step that reveals nothing pays that
+settle + DOM query and **zero** extra model calls; only a real reveal pays a
+translate too. Reveal-triggered continuations are capped at 2 per attempt
+(a page like Logs, where a row control's name is anchored to a changing
+timestamp cell, would otherwise register a "reveal" every round and run to
+`max_rounds`). The inner per-action execution loop is untouched by any of
+this. `max_rounds`=6 and `step_attempt_budget_s` remain the backstops, and
+expand-then-collapse converges on its own (the collapse adds no new name, so
+the next round breaks).
 
 **Login credential precedence (2026-08-19).** Highest wins:
 1. per-case credentials (Manual tab, `ManualStore.set_credentials`)

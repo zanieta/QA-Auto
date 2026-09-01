@@ -63,6 +63,8 @@ _SNAPSHOT_JS = """
   const tagged = new Set();  // elements granted a ref in THIS snapshot
   const out = [];
   let n = 0;
+  let visibleCapHit = false;
+  outerVisible:
   for (const sel of sels) {
     for (const el of document.querySelectorAll(sel)) {
       if (seen.has(el)) continue;
@@ -110,29 +112,31 @@ _SNAPSHOT_JS = """
       out.push({ref: ref, tag: el.tagName.toLowerCase(),
                 role: el.getAttribute('role') || '', name: name.slice(0, 80)});
       tagged.add(el);
-      if (out.length >= capN) return out;
+      if (out.length >= capN) { visibleCapHit = true; break outerVisible; }
     }
   }
   // Legacy forms hide the real checkbox (0x0 input inside a styled span) and
   // leave only its LABEL visible. Expose those through the label: clicking
   // the label toggles the box. The name carries the current state so the
   // model can reconcile ("Asset Management (checked)").
-  for (const cb of document.querySelectorAll('input[type=checkbox],input[type=radio]')) {
-    if (tagged.has(cb)) continue;
-    const lbl = (cb.labels && cb.labels[0]) || cb.closest('label');
-    if (!lbl || tagged.has(lbl)) continue;
-    const lr = lbl.getBoundingClientRect();
-    const lst = window.getComputedStyle(lbl);
-    if (!(lr.width > 0 && lr.height > 0 &&
-          lst.visibility !== 'hidden' && lst.display !== 'none')) continue;
-    n += 1;
-    const ref = 'e' + n;
-    lbl.setAttribute('data-agent-ref', ref);
-    tagged.add(lbl);
-    const label = ((lbl.innerText || '').trim() || cb.id || 'checkbox').slice(0, 60);
-    out.push({ref: ref, tag: 'input', role: cb.type,
-              name: label + (cb.checked ? ' (checked)' : ' (unchecked)')});
-    if (out.length >= capN) return out;
+  if (!visibleCapHit) {
+    for (const cb of document.querySelectorAll('input[type=checkbox],input[type=radio]')) {
+      if (tagged.has(cb)) continue;
+      const lbl = (cb.labels && cb.labels[0]) || cb.closest('label');
+      if (!lbl || tagged.has(lbl)) continue;
+      const lr = lbl.getBoundingClientRect();
+      const lst = window.getComputedStyle(lbl);
+      if (!(lr.width > 0 && lr.height > 0 &&
+            lst.visibility !== 'hidden' && lst.display !== 'none')) continue;
+      n += 1;
+      const ref = 'e' + n;
+      lbl.setAttribute('data-agent-ref', ref);
+      tagged.add(lbl);
+      const label = ((lbl.innerText || '').trim() || cb.id || 'checkbox').slice(0, 60);
+      out.push({ref: ref, tag: 'input', role: cb.type,
+                name: label + (cb.checked ? ' (checked)' : ' (unchecked)')});
+      if (out.length >= capN) { visibleCapHit = true; break; }
+    }
   }
   // ---- hidden children -------------------------------------------------
   // Interactive elements PRESENT in the DOM but hidden — a collapsed submenu,
@@ -430,10 +434,14 @@ class BrowserSession:
             # No resolvable toggle -> unusable hint -> dropped.
             and e.get("parent_ref")
         ]
-        if len(visible) > MAX_SNAPSHOT_ELEMENTS:
-            log.warning("Element snapshot truncated to %d", MAX_SNAPSHOT_ELEMENTS)
-        if len(hidden) > MAX_HIDDEN_ELEMENTS:
-            log.warning("Hidden element list truncated to %d", MAX_HIDDEN_ELEMENTS)
+        if len(visible) >= MAX_SNAPSHOT_ELEMENTS:
+            log.warning(
+                "Element snapshot hit the visible cap (%d) — hidden-element "
+                "discovery may be degraded on this page",
+                MAX_SNAPSHOT_ELEMENTS,
+            )
+        if len(hidden) >= MAX_HIDDEN_ELEMENTS:
+            log.warning("Hidden element list hit the cap (%d)", MAX_HIDDEN_ELEMENTS)
         return visible[:MAX_SNAPSHOT_ELEMENTS] + hidden[:MAX_HIDDEN_ELEMENTS]
 
     async def snapshot_table_data(self) -> dict[str, list]:

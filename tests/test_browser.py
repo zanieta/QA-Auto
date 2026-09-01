@@ -248,18 +248,28 @@ def test_snapshot_js_destructures_both_caps():
 
     Pins the actual guard shape (not just a loose substring) so a future edit
     can't quietly drop the cap while keeping the bare identifier somewhere
-    else in the block. Also pins that the two `if (out.length >= capN) return
-    out;` early exits in the visible pass — which the brief said must not
-    change — are both still present, and that BOTH `hidden.length >= capH`
-    guards survive (a count, not a loose containment check — one guard
-    alone would still leave the hidden pass able to run one iteration past
-    its budget before the outer loop notices).
+    else in the block. Also pins that BOTH `hidden.length >= capH` guards in
+    the hidden pass survive (a count, not a loose containment check — one
+    guard alone would still leave the hidden pass able to run one iteration
+    past its budget before the outer loop notices).
+
+    Critically, it pins that the visible pass no longer RETURNS on hitting
+    its cap — `return out` there used to end the whole function and skip the
+    hidden pass entirely on any page with >= MAX_SNAPSHOT_ELEMENTS visible
+    controls (a Users/Equipment/Recipes list page). It must `break` out of
+    the visible pass instead, falling through to the hidden pass.
     """
     js = browser_mod._SNAPSHOT_JS
     assert "({maxN, maxHidden})" in js
     hidden_block = js.split("// ---- hidden children")[1]
     assert hidden_block.count("hidden.length >= capH") == 2
-    assert js.count("if (out.length >= capN) return out;") == 2
+    # The visible pass must no longer bail out of the whole function.
+    assert "if (out.length >= capN) return out;" not in js
+    # It must fall through instead — a labelled break out of the outer
+    # selector loop, plus the checkbox-label pass skipping / breaking the
+    # same way once the cap is already hit.
+    assert js.count("visibleCapHit = true") == 2
+    assert "break outerVisible;" in js
 
 
 @pytest.mark.asyncio

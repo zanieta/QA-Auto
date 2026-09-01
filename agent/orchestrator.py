@@ -729,8 +729,9 @@ class Orchestrator:
         frame when evaluation was reached, else None (translate failure or an
         action failure with nothing yet executed — same "no evidence" cases
         the old single-attempt code returned immediately on). `execution_ok`
-        is a placeholder `True` for now (wired up by the retry-scoping fix in
-        the next commit).
+        is True only when every action performed this attempt succeeded and
+        evaluation was reached with no BrowserError and no translate failure
+        along the way — see `_execute_step`'s retry-scoping rule.
 
         A navigation stales every ref from the snapshot, so after any action
         that changes the page URL we re-observe (fresh snapshot) and let the
@@ -810,6 +811,16 @@ class Orchestrator:
         # snapshot then decides: new names = the page revealed something, keep
         # going; nothing new = the step really is done.
         check_for_reveal = False
+        # Reveal-triggered continuations are deliberately broad (any new
+        # visible (tag, name) pair counts), which is exactly what pages like
+        # Logs make happen every round: a row control's name is anchored to
+        # the row's first cell (a timestamp), so any sort/page/filter click
+        # renames it and every round looks like a fresh reveal. Cap the
+        # number of extra rounds this can buy an attempt so a step like that
+        # cannot silently balloon from 1 round to `max_rounds`; TC-1985 needs
+        # exactly one, so a cap of 2 costs it nothing.
+        max_reveal_continuations = 2
+        reveal_continuations = 0
         # Whether the PREVIOUS round's snapshot succeeded. A failed snapshot
         # is swallowed into elements=[], which would make prev_names empty —
         # and an empty prev_names makes EVERYTHING in the next round's
@@ -879,6 +890,14 @@ class Orchestrator:
                 revealed = names - (prev_names or set())
                 if not revealed:
                     break  # nothing new on the page — the step is done
+                if reveal_continuations >= max_reveal_continuations:
+                    log.info(
+                        "Reveal-continuation cap (%d) hit on step %d of %s — "
+                        "stopping the act-observe loop on this attempt",
+                        max_reveal_continuations, orig_index + 1, case_id,
+                    )
+                    break
+                reveal_continuations += 1
                 # Diagnostic only: which mechanism actually fired. A hidden
                 # entry becoming visible is the DOM-hides-content case this
                 # was built for (TC-1985's collapsible submenu); "new content
