@@ -171,10 +171,9 @@ overrides this; blank falls back to the .env admin account.
   autosaved on blur.
 
 **Login as**
-- The same shared `<CredentialsRow>` used on the Manual case card and the Live
-  stage head (same "Login as" label, same `.manual-credentials` markup/classes),
-  restyled a third time for the rail's navy surface — see "Credential
-  precedence" below for how the three logins relate.
+- `<CredentialsRow>`, styled for the rail's navy surface. It is now the ONLY
+  login in the console: the copies on the Manual case card and in the Live
+  stage head were removed on 2026-09-01 — see "Credential precedence" below.
 - Password field shows `••• saved` the same way the per-case row does
   (`has_password`, never the value itself); both fields empty clears back to
   `.env`; a username with an empty password keeps the previously-saved password.
@@ -740,6 +739,29 @@ existing cycle case-search response, so it costs no extra QMetry call.
 - `POST /runs/{run_id}/cancel` → `{"cancelled": true}` (404 if the run is unknown or
   already finished). Used by the Manual tab's per-case agent run (see "Cancelling a
   run" below); the Live tab does not use it.
+
+### Case header pills — this session's mark vs QMetry's record
+The Manual case card's header carries **two** status pills, and the difference
+matters:
+
+1. `.case-status-pill` — **this session's mark**: what the tester or the agent
+   decided just now (`unmarked` / `pass` / `fail` / `blocked`).
+2. `.qmetry-pill` — **what QMetry already has on record** for the case, prefixed
+   `QMetry:` and reading `Pass` / `Fail` / `Blocked` / `WIP` /
+   `Not Executed` (added 2026-09-01). It answers the question a tester has when
+   they open a card: *has this case ever been run?*
+
+The prefix is load-bearing. Both vocabularies are pass/fail/blocked, so without
+it the two pills would be indistinguishable and a tester could read QMetry's
+old verdict as their own fresh mark.
+
+Mapped by result **name**, never by the hex the API returns per case (same rule
+as the rail's badges) — the colour belongs in the token system, and a QMetry
+admin's config must not repaint the console. Styled for the light stage rather
+than reusing the rail's navy-tuned `.case-badge`. Omitted entirely when a case
+has no `execution_result` (fixtures, or a source that does not supply one); an
+unmapped verdict QMetry might add later still shows its word on the neutral
+base pill. The value rides along on the manual session — no extra request.
 
 ### Case-level test data (`.manual-casedata`)
 Below the precondition, a case shows its own **Test data** — QMetry surfaces a

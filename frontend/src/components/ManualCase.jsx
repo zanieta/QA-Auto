@@ -36,6 +36,17 @@ function cleanMarkup(text) {
     .trim()
 }
 
+// QMetry result name -> pill class. "Not Executed" is included on purpose:
+// whether a case has EVER been run is the thing a tester most needs to know
+// when they open it, and it is a real result type in QMetry, not a null.
+const QMETRY_PILL = {
+  Pass: 'qm-pass',
+  Fail: 'qm-fail',
+  Blocked: 'qm-blocked',
+  'Work In Progress': 'qm-wip',
+  'Not Executed': 'qm-notrun',
+}
+
 export default function ManualCase({ plan, testCase, onChanged }) {
   const m = testCase.manual
   const allIndices = testCase.steps.map((_, i) => i)
@@ -126,12 +137,37 @@ export default function ManualCase({ plan, testCase, onChanged }) {
     }
   }
 
+  // The case's last QMetry verdict, for the header pill. Mapped by NAME, never
+  // by the hex the API returns per case — the colour belongs in the token
+  // system, and a QMetry admin's config must not be able to repaint the
+  // console. An unmapped verdict still shows its word, on a neutral pill.
+  const qmetryVerdict = testCase.execution_result?.name
+    ? {
+        name: testCase.execution_result.name,
+        cls: QMETRY_PILL[testCase.execution_result.name] ?? '',
+      }
+    : null
+
   return (
     <section className="manual-case">
       <header className="manual-case-head">
         <span className="stage-head-id">{testCase.id}</span>
         <h1 className="stage-head-title">{testCase.name}</h1>
+        {/* Two different facts, deliberately two pills. The first is THIS
+            session's mark (what the tester or the agent decided just now); the
+            second is what QMetry already has on record for the case, so a
+            tester opening a card can see at a glance whether it has ever been
+            run. Without the "QMetry" prefix the two would be indistinguishable
+            — both vocabularies are pass/fail/blocked. */}
         <span className={`case-status-pill ${m.status}`}>{m.status}</span>
+        {qmetryVerdict && (
+          <span
+            className={`qmetry-pill ${qmetryVerdict.cls}`}
+            title={`Last result recorded in QMetry for this case: ${qmetryVerdict.name}. This session's own mark is the pill to the left.`}
+          >
+            QMetry: {qmetryVerdict.name}
+          </span>
+        )}
         <button
           type="button"
           className="btn btn-ghost"

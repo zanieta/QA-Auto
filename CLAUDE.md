@@ -415,6 +415,10 @@ QMetry REST API client. **Status: implemented and working against the LIVE API**
     wrong guess ships a feature that always reads "not run" and never errors.
     `execution_result(entry)` normalises it to `{name, color}` at the client
     boundary and returns None for anything that is not a dict with a name.
+    Surfaces in the console in TWO places (2026-09-01): the rail's per-row
+    stripe + verdict badge, and a `QMetry: <verdict>` pill on the Manual case
+    card header, beside the pill showing that session's own mark. Both map by
+    result NAME, never by the per-case hex.
     The five result types (`GET /projects/{id}/execution-results`): Pass
     #14892C, Fail #D04437, Blocked #CCC, Work In Progress #F6C342, Not
     Executed #205081. **A never-run case is the "Not Executed" RESULT TYPE,

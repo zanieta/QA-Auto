@@ -1626,3 +1626,28 @@ button:focus-visible,
   color: var(--ink);
   white-space: nowrap;
 }
+
+/* "QMetry: <verdict>" pill on the Manual case card header — what QMetry
+   already has on record for this case, beside the pill showing THIS session's
+   own mark. Both vocabularies are pass/fail/blocked, so the prefix is what
+   keeps them apart. Light-stage styling (the rail's .case-badge is tuned for
+   navy), and the same QMetry hex tokens so the console agrees with the QMetry
+   site. Unmapped verdicts fall back to this neutral base. */
+.qmetry-pill {
+  font-family: var(--mono);
+  font-size: 10px;
+  line-height: 1;
+  padding: 5px 8px;
+  border-radius: 999px;
+  white-space: nowrap;
+  flex: none;
+  background: var(--paper-2, #eef1f7);
+  color: var(--ink);
+  border: 1px solid rgba(27, 42, 107, 0.18);
+}
+
+.qmetry-pill.qm-pass    { background: rgba(20, 137, 44, 0.12);  border-color: var(--qm-pass);    color: #0e5d1e; }
+.qmetry-pill.qm-fail    { background: rgba(208, 68, 55, 0.12);  border-color: var(--qm-fail);    color: #93261c; }
+.qmetry-pill.qm-blocked { background: rgba(120, 120, 120, 0.14); border-color: #9a9a9a;          color: #4a4a4a; }
+.qmetry-pill.qm-wip     { background: rgba(246, 195, 66, 0.18); border-color: var(--qm-wip);     color: #6b4e00; }
+.qmetry-pill.qm-notrun  { background: rgba(32, 80, 129, 0.12);  border-color: var(--qm-notrun);  color: #1b3f66; }
