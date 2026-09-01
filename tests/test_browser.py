@@ -242,13 +242,21 @@ async def test_snapshot_elements_passes_both_caps_to_the_page():
     }
 
 
-@pytest.mark.asyncio
-async def test_snapshot_js_destructures_both_caps():
+def test_snapshot_js_destructures_both_caps():
     """The JS takes ONE argument object — Playwright passes a single value —
-    and must read both budgets out of it, or the hidden pass is unbounded."""
+    and must read both budgets out of it, or the hidden pass is unbounded.
+
+    Pins the actual guard shape (not just a loose substring) so a future edit
+    can't quietly drop the cap while keeping the bare identifier somewhere
+    else in the block. Also pins that the two `if (out.length >= capN) return
+    out;` early exits in the visible pass — which the brief said must not
+    change — are both still present.
+    """
     js = browser_mod._SNAPSHOT_JS
     assert "({maxN, maxHidden})" in js
-    assert "maxHidden" in js.split("// ---- hidden children")[1]
+    hidden_block = js.split("// ---- hidden children")[1]
+    assert "hidden.length >= capH" in hidden_block
+    assert js.count("if (out.length >= capN) return out;") == 2
 
 
 @pytest.mark.asyncio

@@ -51,6 +51,11 @@ MAX_TABLE_CELL_CHARS = 40
 # and return [{ref, tag, role, name}]. Capped at MAX_SNAPSHOT_ELEMENTS.
 _SNAPSHOT_JS = """
 ({maxN, maxHidden}) => {
+  // Fail safe on a caller mistake: if a scalar were ever passed instead of
+  // the {maxN, maxHidden} object, destructuring silently succeeds with both
+  // undefined, and `x >= undefined` is always false — both passes would run
+  // uncapped. Fall back to sane bounds instead.
+  const capN = maxN || 60, capH = maxHidden || 0;
   const sels = ['button','a[href]','input','textarea','select',
     '[role=button]','[role=link]','[role=tab]','[role=menuitem]',
     '[role=checkbox]','[role=radio]'];
@@ -105,7 +110,7 @@ _SNAPSHOT_JS = """
       out.push({ref: ref, tag: el.tagName.toLowerCase(),
                 role: el.getAttribute('role') || '', name: name.slice(0, 80)});
       tagged.add(el);
-      if (out.length >= maxN) return out;
+      if (out.length >= capN) return out;
     }
   }
   // Legacy forms hide the real checkbox (0x0 input inside a styled span) and
@@ -127,7 +132,7 @@ _SNAPSHOT_JS = """
     const label = ((lbl.innerText || '').trim() || cb.id || 'checkbox').slice(0, 60);
     out.push({ref: ref, tag: 'input', role: cb.type,
               name: label + (cb.checked ? ' (checked)' : ' (unchecked)')});
-    if (out.length >= maxN) return out;
+    if (out.length >= capN) return out;
   }
   // ---- hidden children -------------------------------------------------
   // Interactive elements PRESENT in the DOM but hidden — a collapsed submenu,
@@ -137,10 +142,12 @@ _SNAPSHOT_JS = """
   // empty parent_ref: Python drops those anyway, and a hint nobody can act on
   // is worse than silence.
   const hidden = [];
+  let tried = 0;  // candidate budget, independent of capH — see below
+  hiddenScan:
   for (const sel of sels) {
-    if (hidden.length >= maxHidden) break;
+    if (hidden.length >= capH) break;
     for (const el of document.querySelectorAll(sel)) {
-      if (hidden.length >= maxHidden) break;
+      if (hidden.length >= capH) break;
       if (seen.has(el) || tagged.has(el)) continue;
       seen.add(el);
       const r = el.getBoundingClientRect();
@@ -148,31 +155,61 @@ _SNAPSHOT_JS = """
       if (r.width > 0 && r.height > 0 &&
           st.visibility !== 'hidden' && st.display !== 'none') continue;
       const name = (el.getAttribute('aria-label') || el.getAttribute('title') ||
-        el.textContent || '').trim();
+        el.textContent || '').replace(/\s+/g, ' ').trim();
       if (!name) continue;
-      // The nearest ancestor actually doing the hiding. If there is none, the
-      // element is hidden for some other reason (0x0, clipped, off-screen) and
-      // there is no toggle to name.
+      // A candidate that reaches this point pays for a full ancestor climb
+      // plus a subtree scan per level below, whether or not it ends up
+      // emitted — capH alone does not bound that cost (an element that
+      // fails the hider/toggle lookup never adds to hidden.length). Bound
+      // the total number of such attempts per snapshot instead.
+      if (++tried > 300) break hiddenScan;
+      // The nearest ancestor actually doing the hiding — seeded with the
+      // element itself, since legacy jQuery .hide() sets display:none on
+      // the element directly, not just a wrapping container. If neither the
+      // element nor an ancestor within 2 levels is hidden by style, the
+      // element is invisible for some other reason (opacity:0, clip-path,
+      // max-height:0 — all already caught as VISIBLE, and so already
+      // excluded, by the bounding-rect check in the earlier pass) and there
+      // is no toggle to name.
       let hider = null;
-      for (let box = el.parentElement; box && box !== document.body; box = box.parentElement) {
+      for (let box = el, depth = 0; box && box !== document.body && depth <= 2;
+           box = box.parentElement, depth++) {
         const bs = window.getComputedStyle(box);
         if (bs.display === 'none' || bs.visibility === 'hidden') { hider = box; break; }
       }
       if (!hider) continue;
-      // The toggle is the nearest ALREADY-TAGGED (therefore visible) control
-      // preceding that container: walk previous siblings, then climb.
+      // A body-level container (e.g. a pre-rendered modal appended directly
+      // to <body>) has no sibling to reveal it — skip rather than emit a
+      // confidently wrong hint. A false negative here is the safe direction.
+      if (hider.parentElement === document.body) continue;
+      // The toggle is the LAST already-tagged (therefore visible in THIS
+      // snapshot) control preceding that container: walk previous siblings
+      // (nearest first), then climb up to 2 levels above the container.
+      // Nav submenus resolve at level 0 (the container's own previous
+      // sibling), so they are unaffected by the cap.
+      // `tagged` (not the data-agent-ref ATTRIBUTE) is the source of truth:
+      // nothing ever removes that attribute between snapshots, so a stale
+      // ref from an earlier snapshot can still be present on an unrelated
+      // element and would otherwise be picked up as a false toggle. Among a
+      // sibling's own tagged descendants, the LAST one in document order is
+      // used — the first is typically the control farthest from the hidden
+      // container, e.g. an unrelated earlier link in the same nav group.
       let toggle = null;
-      for (let node = hider; node && node !== document.body && !toggle; node = node.parentElement) {
+      for (let node = hider, depth = 0;
+           node && node !== document.body && !toggle && depth <= 2;
+           node = node.parentElement, depth++) {
         for (let sib = node.previousElementSibling; sib && !toggle; sib = sib.previousElementSibling) {
-          if (sib.hasAttribute('data-agent-ref')) toggle = sib;
-          else toggle = sib.querySelector('[data-agent-ref]');
+          if (tagged.has(sib)) { toggle = sib; continue; }
+          const candidates = Array.from(sib.querySelectorAll('[data-agent-ref]'))
+            .filter(c => tagged.has(c));
+          if (candidates.length) toggle = candidates[candidates.length - 1];
         }
       }
       if (!toggle) continue;
       hidden.push({ref: null, hidden: true,
                    parent_ref: toggle.getAttribute('data-agent-ref'),
                    parent: ((toggle.innerText || toggle.getAttribute('aria-label') ||
-                             '').trim()).slice(0, 40),
+                             '').replace(/\s+/g, ' ').trim()).slice(0, 40),
                    tag: el.tagName.toLowerCase(),
                    role: el.getAttribute('role') || '',
                    name: name.slice(0, 80)});
