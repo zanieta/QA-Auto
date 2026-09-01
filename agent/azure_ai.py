@@ -135,11 +135,31 @@ class AzureAIClient:
         if app_context:
             user_parts.append(f"CONTEXT: {app_context}")
         if elements:
-            lines = ["PAGE ELEMENTS (choose by ref; only use refs that exist):"]
-            for el in elements:
-                kind = el.get("role") or el.get("tag") or "?"
-                lines.append(f'  {el.get("ref")}  {kind}  "{el.get("name", "")}"')
-            user_parts.append("\n".join(lines))
+            # Visible, choosable elements keep PAGE ELEMENTS exactly as it has
+            # always been — nothing the prompt relies on moves.
+            visible = [e for e in elements if e.get("ref")]
+            hidden = [e for e in elements if not e.get("ref") and e.get("hidden")]
+            if visible:
+                lines = ["PAGE ELEMENTS (choose by ref; only use refs that exist):"]
+                for el in visible:
+                    kind = el.get("role") or el.get("tag") or "?"
+                    lines.append(f'  {el.get("ref")}  {kind}  "{el.get("name", "")}"')
+                user_parts.append("\n".join(lines))
+            # Hidden children are informational: they prove a target EXISTS and
+            # name what reveals it. Deliberately ref-less, so the only action
+            # available is clicking the parent.
+            if hidden:
+                lines = [
+                    "HIDDEN ELEMENTS (present but not visible — NOT clickable "
+                    "yet; click the parent ref to reveal, then you will be "
+                    "called again with a fresh list):"
+                ]
+                for el in hidden:
+                    lines.append(
+                        f'  under {el.get("parent_ref")} "{el.get("parent", "")}"'
+                        f'  ->  "{el.get("name", "")}"'
+                    )
+                user_parts.append("\n".join(lines))
         messages = [
             {"role": "system", "content": system},
             {"role": "user", "content": "\n".join(user_parts)},

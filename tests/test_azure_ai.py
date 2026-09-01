@@ -379,6 +379,58 @@ async def test_translate_step_includes_elements_in_prompt():
 
 
 @pytest.mark.asyncio
+async def test_translate_step_renders_hidden_elements_separately():
+    """PAGE ELEMENTS keeps its exact shape — choosable refs only — while hidden
+    entries appear in their own block naming the parent to click."""
+    client = _Client(endpoint="https://x", api_key="k", deployment="gpt-4o")
+    captured = {}
+
+    async def fake_chat(messages, **kw):
+        captured["messages"] = messages
+        return _json.dumps({"actions": [], "done": True})
+
+    client._chat = fake_chat  # type: ignore
+    await client.translate_step(
+        "Go to Recipe submenu and open the target item",
+        app_context="url: /x",
+        elements=[
+            {"ref": "e7", "tag": "a", "role": "", "name": "Recipe"},
+            {"ref": None, "hidden": True, "parent_ref": "e7", "parent": "Recipe",
+             "tag": "a", "role": "", "name": "Edit Inventory"},
+        ],
+    )
+    sent = captured["messages"][-1]["content"]
+    assert "PAGE ELEMENTS" in sent
+    assert "HIDDEN ELEMENTS" in sent
+    page_block, hidden_block = sent.split("HIDDEN ELEMENTS")
+    # The hidden child must never look like a choosable ref.
+    assert "Edit Inventory" not in page_block
+    assert "e7" in page_block
+    assert "Edit Inventory" in hidden_block
+    assert "e7" in hidden_block
+
+
+@pytest.mark.asyncio
+async def test_translate_step_omits_the_hidden_block_when_there_are_none():
+    """A page with nothing hidden must produce the prompt it produces today —
+    not an empty section inviting the model to invent one."""
+    client = _Client(endpoint="https://x", api_key="k", deployment="gpt-4o")
+    captured = {}
+
+    async def fake_chat(messages, **kw):
+        captured["messages"] = messages
+        return _json.dumps({"actions": [], "done": True})
+
+    client._chat = fake_chat  # type: ignore
+    await client.translate_step(
+        "Click Save",
+        app_context="url: /x",
+        elements=[{"ref": "e1", "tag": "button", "role": "", "name": "Save"}],
+    )
+    assert "HIDDEN ELEMENTS" not in captured["messages"][-1]["content"]
+
+
+@pytest.mark.asyncio
 async def test_translate_step_works_without_elements():
     client = _Client(endpoint="https://x", api_key="k", deployment="gpt-4o")
 
