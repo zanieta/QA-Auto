@@ -284,6 +284,7 @@ therefore no execution id, so `_push_to_qmetry` skips it (`skip <case
 id>: no QMetry execution id`); the flag's only effect there is switching the
 source. For a real cycle key, `--push-qmetry` really does write results, so
 don't add it to a real cycle run casually.
+`--testcase` can ONLY ever run a fixture case — the QMetry source is gated on `bool(args.plan)` (main.py:98), and `--plan`/`--testcase` are a mutually exclusive argparse group, so `--testcase <key> --push-qmetry` still silently runs `FixtureCaseSource` with no warning; `--plan TC:<case key>` is therefore the only CLI way to run one real case.
 
 ---
 
