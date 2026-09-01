@@ -734,9 +734,18 @@ class Orchestrator:
 
         A navigation stales every ref from the snapshot, so after any action
         that changes the page URL we re-observe (fresh snapshot) and let the
-        model plan the remainder with a PROGRESS log. Single-page plans keep
-        the old fast path: one round, no extra model calls. The model stops
-        the loop by returning {"actions": [], "done": true}.
+        model plan the remainder with a PROGRESS log. A same-page round (no
+        navigation) is NOT automatically the end of the step: its actions may
+        have revealed new UI without changing the URL (a collapsible nav
+        parent expanding a submenu, a modal opening) — see the TC-1985 fix.
+        The next round's own snapshot decides this cheaply: a same-page round
+        always costs one extra snapshot to check for new (tag, name) pairs
+        versus the previous round; when nothing new appears the loop ends
+        there (the common case — one extra DOM query, no extra model call).
+        When something new appears, that costs one extra planning round (a
+        fresh translate call) so the model can act on what it can now see.
+        The model also stops the loop directly by returning {"actions": [],
+        "done": true}.
 
         Time budget: checked between rounds only (never interrupts a round in
         flight) — if this attempt has run longer than `step_attempt_budget_s`
@@ -792,10 +801,22 @@ class Orchestrator:
         # opening. Compared by NAME, never by ref: refs are assigned per
         # snapshot and renumber every time, so every element would look new.
         prev_names: set[tuple[str, str]] | None = None
+        # The (tag, name) pairs that were HIDDEN (ref=None) in the previous
+        # round's snapshot — diagnostic only, used to distinguish "a hidden
+        # element became visible" from "new content appeared" in the log line
+        # below; never fed into the revealed/break decision itself.
+        prev_hidden_names: set[tuple[str, str]] = set()
         # Set when a round ran entirely on one page. The next round's own
         # snapshot then decides: new names = the page revealed something, keep
         # going; nothing new = the step really is done.
         check_for_reveal = False
+        # Whether the PREVIOUS round's snapshot succeeded. A failed snapshot
+        # is swallowed into elements=[], which would make prev_names empty —
+        # and an empty prev_names makes EVERYTHING in the next round's
+        # non-empty names look "revealed". That is not a real observation, so
+        # the decision is skipped (proceed to translate) rather than treating
+        # a snapshot failure as evidence of a reveal.
+        prev_snapshot_ok = True
 
         for _round in range(max_rounds):
             if _round > 0 and not prev_round_had_actions:
@@ -804,10 +825,26 @@ class Orchestrator:
 
             actions_before = len(executed_actions)
 
+            if check_for_reveal:
+                # The previous round's LAST same-page action gets no settle
+                # and no frame (see `if navigated or i < len(actions) - 1`
+                # below), and the click itself has no built-in wait — so
+                # without this, the decision snapshot below fires microseconds
+                # after the click. A jQuery/CSS slide-open submenu has
+                # zero-height children mid-animation, which `snapshot_elements`
+                # treats as not-yet-visible, so the reveal would be missed
+                # intermittently. Settle BEFORE the decision, not after it.
+                try:
+                    await browser.wait_for_settle(quiet_ms=400, timeout_ms=3_000)
+                except Exception:
+                    pass  # a lost settle never fails the step
+
             try:
                 elements = await browser.snapshot_elements()
+                snapshot_ok = True
             except Exception:
                 elements = []
+                snapshot_ok = False
             # Hidden entries carry ref=None, so this guard also keeps them out
             # of seen_elements — which _format_detail reads to name what was
             # clicked. Naming something the agent never touched is exactly the
@@ -833,13 +870,29 @@ class Orchestrator:
                 for e in elements
                 if e.get("ref")
             }
-            if check_for_reveal:
+            hidden_names = {
+                (e.get("tag") or "", e.get("name") or "")
+                for e in elements
+                if not e.get("ref") and e.get("hidden")
+            }
+            if check_for_reveal and prev_snapshot_ok:
                 revealed = names - (prev_names or set())
                 if not revealed:
                     break  # nothing new on the page — the step is done
+                # Diagnostic only: which mechanism actually fired. A hidden
+                # entry becoming visible is the DOM-hides-content case this
+                # was built for (TC-1985's collapsible submenu); "new content
+                # appeared" covers apps that render on demand instead, where a
+                # name simply wasn't in the DOM at all last round.
+                mechanism = (
+                    "a hidden element became visible"
+                    if revealed & prev_hidden_names
+                    else "new content appeared"
+                )
                 log.info(
-                    "Same-page reveal on step %d of %s: %d new element(s) — re-observing",
-                    orig_index + 1, case_id, len(revealed),
+                    "Same-page reveal on step %d of %s: %d new element(s) "
+                    "(%s) — re-observing",
+                    orig_index + 1, case_id, len(revealed), mechanism,
                 )
                 # The reveal itself is evidence the evaluator needs (an open
                 # submenu is transient), and the action that caused it got no
@@ -851,6 +904,8 @@ class Orchestrator:
                     pass  # a lost frame never fails the step
             check_for_reveal = False
             prev_names = names
+            prev_hidden_names = hidden_names
+            prev_snapshot_ok = snapshot_ok
 
             context = f"current URL: {await browser.current_url()}"
             if expected:

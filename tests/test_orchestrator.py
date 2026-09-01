@@ -1273,6 +1273,131 @@ async def test_hidden_entries_never_reach_the_performed_action_detail():
     assert "Edit Inventory" not in performed
 
 
+@pytest.mark.asyncio
+async def test_hidden_entries_do_not_count_as_already_known_for_reveal_detection():
+    """Load-bearing on the `if e.get("ref")` filter on the reveal `names` set
+    (not on seen_elements/_format_detail — that is a separate filter covered
+    by the test above). Round 0's snapshot already lists `Edit Inventory` as
+    a HIDDEN entry (ref=None) alongside visible `Recipe`. If the reveal
+    `names` set counted hidden entries, `Edit Inventory` would already be
+    "known" in round 0, so its becoming VISIBLE in round 1 would register as
+    nothing new and the loop would break after one translate call — silently,
+    with a green suite, exactly as the brief warned. Comparing by name
+    without this filter is invisible without this test: delete the filter and
+    every other test still passes."""
+    cases = [{"id": "A", "name": "Alpha", "steps": [
+        {"action": "Go to Recipe > Edit Inventory", "expected": "Inventory page"},
+    ]}]
+    azure = _fake_azure(
+        translate_side_effect=[
+            [{"action": "click", "ref": "e7", "value": None}],  # click Recipe (no nav)
+            [],                                                 # done
+        ],
+        evaluate_side_effect=[{"status": "pass", "reason": "on the inventory page"}],
+    )
+    browser = _fake_browser()
+    browser.snapshot_elements = AsyncMock(side_effect=[
+        # round 0: Recipe visible; Edit Inventory present but HIDDEN
+        [{"ref": "e7", "tag": "a", "role": "", "name": "Recipe"},
+         {"ref": None, "hidden": True, "parent_ref": "e7", "parent": "Recipe",
+          "tag": "a", "role": "", "name": "Edit Inventory"}],
+        # round 1: the click made Edit Inventory VISIBLE, with a real ref
+        [{"ref": "e7", "tag": "a", "role": "", "name": "Recipe"},
+         {"ref": "e9", "tag": "a", "role": "", "name": "Edit Inventory"}],
+    ])
+    orch = Orchestrator(
+        azure=azure,
+        browser_factory=lambda: browser,
+        case_source=FakeCaseSource({"key": "X", "name": "x"}, cases),
+        on_update=lambda s: None,
+    )
+    state = await orch.run_single_case("A")
+    step = state.test_cases[0].steps[0]
+    assert step.status == "pass"
+    assert azure.translate_step.await_count >= 2
+
+
+@pytest.mark.asyncio
+async def test_extra_reveal_round_does_not_repeat_a_committing_action():
+    """New same-page content (a success toast, an inline validation message)
+    also satisfies the broad reveal rule, not just a hidden-becomes-visible
+    submenu. The model declining the extra round (returning []) is the
+    expected, safe path: the step must resolve cleanly and no action may be
+    executed twice — a re-click of Save/Delete on a committing action would
+    re-mutate the system under test."""
+    cases = [{"id": "A", "name": "Alpha", "steps": [
+        {"action": "Click Save", "expected": "Saved"},
+    ]}]
+    azure = _fake_azure(
+        translate_side_effect=[
+            [{"action": "click", "ref": "e1", "value": None}],  # click Save (no nav)
+            [],                                                 # model declines a re-click
+        ],
+        evaluate_side_effect=[{"status": "pass", "reason": "saved"}],
+    )
+    browser = _fake_browser()
+    browser.snapshot_elements = AsyncMock(side_effect=[
+        # round 0: just the Save button
+        [{"ref": "e1", "tag": "button", "role": "", "name": "Save"}],
+        # round 1: a success toast appeared — new content, no hidden origin
+        [{"ref": "e1", "tag": "button", "role": "", "name": "Save"},
+         {"ref": "e2", "tag": "button", "role": "", "name": "Dismiss"}],
+    ])
+    orch = Orchestrator(
+        azure=azure,
+        browser_factory=lambda: browser,
+        case_source=FakeCaseSource({"key": "X", "name": "x"}, cases),
+        on_update=lambda s: None,
+    )
+    state = await orch.run_single_case("A")
+    step = state.test_cases[0].steps[0]
+    assert step.status == "pass"
+    # No action was executed twice — Save was clicked exactly once, even
+    # though the toast gave the model a second planning opportunity.
+    executed = [c.args[0] for c in browser.execute_action.call_args_list]
+    save_executions = [a for a in executed if a.get("ref") == "e1"]
+    assert len(save_executions) == 1
+
+
+@pytest.mark.asyncio
+async def test_failed_snapshot_does_not_masquerade_as_a_real_no_reveal_observation():
+    """A snapshot exception is swallowed into elements=[], which would make
+    prev_names empty. Without the fix, the NEXT round's own empty/near-empty
+    snapshot compared against that empty prev_names looks like "nothing new"
+    and the loop breaks — ending the step on a data blackout, not a real
+    observation. Round 0's snapshot fails; round 1's snapshot legitimately
+    comes back empty (e.g. a transient loading state) — the loop must not
+    treat that as proof the step is done and must still give the model a
+    second round."""
+    cases = [{"id": "A", "name": "Alpha", "steps": [
+        {"action": "Do a thing", "expected": "Done"},
+    ]}]
+    azure = _fake_azure(
+        translate_side_effect=[
+            [{"action": "click", "ref": "e1", "value": None}],  # round 0
+            [],                                                 # round 1 - done
+        ],
+        evaluate_side_effect=[{"status": "pass", "reason": "ok"}],
+    )
+    browser = _fake_browser()
+    browser.snapshot_elements = AsyncMock(side_effect=[
+        Exception("boom"),  # round 0's snapshot fails
+        [],                 # round 1's snapshot legitimately empty
+    ])
+    orch = Orchestrator(
+        azure=azure,
+        browser_factory=lambda: browser,
+        case_source=FakeCaseSource({"key": "X", "name": "x"}, cases),
+        on_update=lambda s: None,
+    )
+    state = await orch.run_single_case("A")
+    step = state.test_cases[0].steps[0]
+    assert step.status == "pass"
+    # The step got its second round instead of being cut short by a
+    # snapshot failure masquerading as "nothing revealed".
+    assert azure.translate_step.await_count == 2
+
+
 # ----- PERFORMED ACTIONS reach the evaluator ---------------------------------
 
 
