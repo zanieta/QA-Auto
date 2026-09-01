@@ -165,6 +165,79 @@ async def test_snapshot_elements_empty_on_evaluate_error():
 
 
 @pytest.mark.asyncio
+async def test_snapshot_elements_keeps_hidden_children_after_visible_ones():
+    """Hidden entries ride along so the model learns a target EXISTS.
+
+    They carry no ref (they are not clickable while hidden) and name the
+    visible control that toggles them — the only move available to the model.
+    """
+    s, page = _session_with_fake_page()
+    page.evaluate = AsyncMock(
+        return_value=[
+            {"ref": "e7", "tag": "a", "role": "", "name": "Recipe"},
+            {"ref": None, "hidden": True, "parent_ref": "e7", "parent": "Recipe",
+             "tag": "a", "role": "", "name": "Edit Inventory"},
+        ]
+    )
+    out = await s.snapshot_elements()
+    assert [e.get("name") for e in out] == ["Recipe", "Edit Inventory"]
+    assert out[0]["ref"] == "e7"
+    assert out[1]["ref"] is None
+    assert out[1]["parent_ref"] == "e7"
+
+
+@pytest.mark.asyncio
+async def test_snapshot_elements_drops_hidden_children_without_a_parent():
+    """An unresolvable toggle means an unusable hint. Dropping it beats
+    emitting a ref-less entry the model can do nothing with."""
+    s, page = _session_with_fake_page()
+    page.evaluate = AsyncMock(
+        return_value=[
+            {"ref": "e1", "tag": "a", "role": "", "name": "Dashboard"},
+            {"ref": None, "hidden": True, "parent_ref": "", "parent": "",
+             "tag": "a", "role": "", "name": "Orphan"},
+            {"ref": None, "hidden": True, "parent_ref": "e1", "parent": "Dashboard",
+             "tag": "a", "role": "", "name": "Keeper"},
+        ]
+    )
+    out = await s.snapshot_elements()
+    assert [e.get("name") for e in out] == ["Dashboard", "Keeper"]
+
+
+@pytest.mark.asyncio
+async def test_snapshot_elements_caps_hidden_children_separately():
+    """Hidden markup must never displace a real, clickable element: the cap is
+    its own budget, applied in Python whatever the page's JS returns."""
+    s, page = _session_with_fake_page()
+    visible = [{"ref": f"e{i}", "tag": "a", "role": "", "name": f"v{i}"} for i in range(5)]
+    hidden = [
+        {"ref": None, "hidden": True, "parent_ref": "e0", "parent": "v0",
+         "tag": "a", "role": "", "name": f"h{i}"}
+        for i in range(browser_mod.MAX_HIDDEN_ELEMENTS + 9)
+    ]
+    page.evaluate = AsyncMock(return_value=visible + hidden)
+    out = await s.snapshot_elements()
+    kept_visible = [e for e in out if e.get("ref")]
+    kept_hidden = [e for e in out if e.get("hidden")]
+    assert len(kept_visible) == 5
+    assert len(kept_hidden) == browser_mod.MAX_HIDDEN_ELEMENTS
+
+
+@pytest.mark.asyncio
+async def test_snapshot_elements_passes_both_caps_to_the_page():
+    """Both budgets reach the JS, so a huge page is trimmed before the payload
+    crosses the boundary as well as after."""
+    s, page = _session_with_fake_page()
+    page.evaluate = AsyncMock(return_value=[])
+    await s.snapshot_elements()
+    arg = page.evaluate.await_args.args[1]
+    assert arg == {
+        "maxN": browser_mod.MAX_SNAPSHOT_ELEMENTS,
+        "maxHidden": browser_mod.MAX_HIDDEN_ELEMENTS,
+    }
+
+
+@pytest.mark.asyncio
 async def test_execute_action_resolves_ref_to_data_attr_selector():
     s, page = _session_with_fake_page()
     await s.execute_action({"action": "click", "ref": "e2", "value": None})

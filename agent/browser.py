@@ -34,6 +34,12 @@ DEFAULT_ACTION_TIMEOUT_MS = 15_000
 
 MAX_SNAPSHOT_ELEMENTS = 60
 
+# Hidden interactive elements (a collapsed submenu, a pre-rendered modal) ride
+# along on the snapshot so the model learns a target EXISTS and what reveals
+# it. Their own budget, applied AFTER the visible pass, so hidden markup can
+# never displace a real clickable element out of MAX_SNAPSHOT_ELEMENTS.
+MAX_HIDDEN_ELEMENTS = 20
+
 # Hard caps for snapshot_table_data() — applied in Python regardless of what
 # the page/JS produces, so a pathological page (huge grid, long cell text)
 # can never bloat a translator prompt or a log line.
@@ -277,19 +283,55 @@ class BrowserSession:
     async def snapshot_elements(self) -> list[dict[str, Any]]:
         """Tag visible interactive elements with data-agent-ref and return them.
 
-        Each entry: {ref, tag, role, name}. The ref is resolvable via the
-        selector [data-agent-ref="<ref>"]. Returns [] if evaluation fails.
+        Visible entries: `{ref, tag, role, name}` — the ref is resolvable via
+        the selector `[data-agent-ref="<ref>"]`. These come first and are
+        unchanged.
+
+        Hidden entries follow: interactive elements that are present in the DOM
+        but hidden — a collapsed submenu, a pre-rendered modal — as
+        `{ref: None, hidden: True, parent_ref, parent, tag, role, name}`.
+        They exist so the model can learn that a target it needs EXISTS and
+        which visible control reveals it; without them a step like
+        "Recipe > Edit Inventory" is unreachable, because the target is absent
+        from the snapshot entirely and the model can only guess among the
+        visible items (the TC-1985 failure).
+
+        A hidden entry deliberately carries NO ref: it is not clickable while
+        hidden, so handing out a ref would just trade one failure for a
+        Playwright timeout. Its only actionable content is `parent_ref`.
+        An entry whose toggle could not be resolved is DROPPED — a hint the
+        model cannot act on is worse than silence.
+
+        Both caps are enforced here in Python regardless of what the page's JS
+        returns (same rule as `snapshot_table_data`). Returns [] if evaluation
+        fails.
         """
         if self._page is None:
             raise BrowserError("No active page — call open_session() first")
         try:
-            elements = await self._page.evaluate(_SNAPSHOT_JS, MAX_SNAPSHOT_ELEMENTS)
+            raw = await self._page.evaluate(
+                _SNAPSHOT_JS,
+                {"maxN": MAX_SNAPSHOT_ELEMENTS, "maxHidden": MAX_HIDDEN_ELEMENTS},
+            )
         except Exception as e:  # page closed, JS error, etc.
             log.warning("snapshot_elements failed: %s", e)
             return []
-        if len(elements) >= MAX_SNAPSHOT_ELEMENTS:
+        if not isinstance(raw, list):
+            return []
+
+        visible = [e for e in raw if isinstance(e, dict) and e.get("ref")]
+        hidden = [
+            e
+            for e in raw
+            if isinstance(e, dict) and not e.get("ref") and e.get("hidden")
+            # No resolvable toggle -> unusable hint -> dropped.
+            and e.get("parent_ref")
+        ]
+        if len(visible) >= MAX_SNAPSHOT_ELEMENTS:
             log.warning("Element snapshot truncated to %d", MAX_SNAPSHOT_ELEMENTS)
-        return elements
+        if len(hidden) > MAX_HIDDEN_ELEMENTS:
+            log.warning("Hidden element list truncated to %d", MAX_HIDDEN_ELEMENTS)
+        return visible[:MAX_SNAPSHOT_ELEMENTS] + hidden[:MAX_HIDDEN_ELEMENTS]
 
     async def snapshot_table_data(self) -> dict[str, list]:
         """Return the first visible on-page table as compact structured data.
