@@ -561,6 +561,54 @@ page/JS returns, so it can never bloat a prompt or a log line; empty cells are
 dropped; no table on the page returns `{"headers": [], "rows": []}` and never
 raises.
 
+**`snapshot_elements()` also returns hidden interactive elements
+(2026-09-01).** After the visible pass, a second DOM walk finds elements
+present in the DOM but invisible right now — a collapsed nav submenu, a
+pre-rendered modal — and returns them as `{ref: None, hidden: True,
+parent_ref, parent, tag, role, name}`, appended after the visible entries.
+They exist so the model can learn a target EXISTS and which visible control
+reveals it: without them a step like "Recipe → Edit Inventory" is
+unreachable, because the target is entirely absent from the snapshot and the
+model can only guess among the visible items (this was the TC-1985 failure).
+A hidden entry deliberately carries **no ref** — it is not clickable while
+hidden, so a ref would only trade one failure for a Playwright timeout;
+`parent_ref` (resolving to the visible control that toggles it) is the only
+actionable field. An entry whose toggle cannot be resolved is DROPPED rather
+than emitted ref-less — a hint nobody can act on is worse than silence. Own
+budget, `MAX_HIDDEN_ELEMENTS`=20, applied in Python AFTER the visible pass so
+hidden markup can never displace a real clickable element out of
+`MAX_SNAPSHOT_ELEMENTS`.
+
+Parent resolution is a DOM heuristic in `_SNAPSHOT_JS`, not something Python
+can verify: find the nearest ancestor (starting at the element itself, since
+a legacy jQuery `.hide()` sets `display:none` directly on the element, not
+just a wrapper) actually hidden by `display:none`/`visibility:hidden` — this
+walk is unbounded in depth (a depth-2 cap here was tried during review and
+silently dropped elements nested deeper than 2 levels, so the cap was moved
+off this walk entirely); a body-level container (no sibling to reveal it,
+e.g. a modal appended straight to `<body>`) is skipped rather than emit a
+confidently wrong hint; then, from that hidden container, climb up to 2
+levels and look at each level's preceding siblings (nearest first) for the last
+already-tagged (i.e. visible in THIS snapshot) descendant — that is the
+toggle. The whole candidate scan (not just emitted hidden elements) is capped
+at 300 tries per snapshot, independent of `MAX_HIDDEN_ELEMENTS`, because an
+element that fails toggle resolution still pays for the ancestor climb and
+subtree scan without ever counting against the emitted cap.
+
+This heuristic cannot be exercised by the mocked-`Page` test suite — it is a
+pure DOM walk (`getBoundingClientRect`, `getComputedStyle`,
+`previousElementSibling`, `parentElement`) that a mock cannot execute, so a
+mocked test can only assert what Python does with a canned return value, never
+catch a bug in the JS itself. `tests/test_snapshot_js_dom.py` exists because
+of that gap: it drives a REAL headless Chromium against small `set_content()`
+fixtures (no network, no app, no server) for the DOM shapes this heuristic
+must handle. It was added after two independent, careful code reviews of this
+exact block each introduced (round 1) and then missed (round 2) a bug that
+left the hidden pass silently inert — a stray `seen.has(el) ||` guard made it
+dead code in every environment, and the mocked-`Page` suite stayed green
+throughout both. The live TC-1985 run is a further, real-app check on top of
+that file.
+
 ### agent/url_banner.py
 `stamp_url(png_bytes, url)` composites a 32px harness-drawn strip showing the
 page URL onto the top of a screenshot (Chrome has no real address bar to
@@ -577,6 +625,44 @@ execute + screenshot each step → evaluate → resolve step in run_state → po
 QMetry → (if fail and bugs enabled) create Jira bug → close browser. Updates
 run_state after every step so the frontend stays live. Catches all per-case
 exceptions so one bad case never kills the run.
+
+**Same-page re-observe (2026-09-01).** `_attempt_step`'s act→observe loop
+used to end a round on `if not navigated: break` — but "the URL did not
+change" and "the step is complete" are different facts. Clicking a
+collapsible nav parent expands a submenu WITHOUT navigating, so the step
+ended before the model was ever shown the revealed child — TC-1985
+("Recipe → Edit Inventory") could never pass.
+
+Now a same-page round sets `check_for_reveal`, and the NEXT round decides
+from its own snapshot: before that snapshot is taken, `wait_for_settle` runs
+first — a jQuery/CSS slide-open submenu has zero-height children for a moment
+after the click, which `snapshot_elements` would otherwise read as
+not-yet-visible, missing the reveal intermittently. The snapshot's VISIBLE
+`(tag, name)` pairs (never hidden ones — a hidden entry shares its
+`(tag, name)` with the element it becomes once revealed, so counting it would
+make the target look already-known and the loop would break, exactly
+reproducing the TC-1985 failure) are compared, by name and never by ref
+(refs renumber every snapshot, so every element would read as new), against
+the previous round's set. New names mean the page revealed something and the
+loop continues (worth one more translate call); nothing new means the step
+is genuinely done and the loop breaks there. If the PREVIOUS round's own
+snapshot had failed, the reveal decision is skipped entirely rather than
+comparing against an empty set — an empty `prev_names` would make everything
+in the new snapshot look "revealed" and isn't a real observation.
+
+The log line distinguishes which half fired: "a hidden element became
+visible" when the newly-seen names were in the previous round's hidden set
+(the DOM-hides-content case this was built for), versus "new content
+appeared" for apps that render on demand instead (the name simply wasn't in
+the DOM at all last round). A genuine reveal also appends one screenshot
+frame — the action that caused it was the last of a same-page plan and so
+got none, and an open submenu is transient evidence the evaluator needs.
+Because the whole check reuses a snapshot the loop was taking anyway, a step
+that reveals nothing costs one cheap DOM query and **zero** extra model
+calls; only a real reveal pays a translate. The inner per-action execution
+loop is untouched by any of this. `max_rounds`=6 and `step_attempt_budget_s`
+remain the backstops, and expand-then-collapse converges on its own (the
+collapse adds no new name, so the next round breaks).
 
 **Login credential precedence (2026-08-19).** Highest wins:
 1. per-case credentials (Manual tab, `ManualStore.set_credentials`)
