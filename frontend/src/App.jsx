@@ -12,7 +12,6 @@ import ExecutionTape from './components/ExecutionTape.jsx'
 import StageFoot from './components/StageFoot.jsx'
 import ManualView from './components/ManualView.jsx'
 import StartPanel from './components/StartPanel.jsx'
-import CredentialsRow from './components/CredentialsRow.jsx'
 import {
   logFailuresToJira,
   pushRunToQmetry,
@@ -27,6 +26,14 @@ import {
   useManualState,
 } from './hooks/useManualState.js'
 
+// Case tickboxes render on BOTH tabs (2026-09-01). The ticks choose what a
+// full-plan Live run covers; the Manual tab shows them too so the set can be
+// chosen while reading the cases, which is where a tester actually decides.
+// A constant rather than a literal so the reason lives with the value — and so
+// the comment is not wedged inside a JSX attribute list, where `//` parses only
+// by the bundler's goodwill.
+const CASES_ARE_SELECTABLE = true
+
 export default function App() {
   const [runId, setRunId] = useState(null)
   const { state, error } = useRunState(runId)
@@ -38,8 +45,6 @@ export default function App() {
   // Run without touching anything behaves exactly as it did before tickboxes.
   const [selectedIds, setSelectedIds] = useState(() => new Set())
   const [tab, setTab] = useState('manual') // 'manual' | 'live'
-  const [runUser, setRunUser] = useState('')
-  const [runPw, setRunPw] = useState('')
 
   // What the rail browses: 'tr' = test runs, 'tc' = the project test case
   // library. A TR is opened as a plan of its own; a library case is opened as
@@ -63,6 +68,11 @@ export default function App() {
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   const [defaultCycle, setDefaultCycle] = useState(null)
+  // The human key + name behind `defaultCycle`, which is an internal QMetry
+  // cycle id. Resolved server-side (GET /config) so the start panel can offer
+  // "SOUSCLOUD-TR-482 — Claude - Sample Test Cycle" instead of the raw id.
+  const [defaultCycleKey, setDefaultCycleKey] = useState(null)
+  const [defaultCycleName, setDefaultCycleName] = useState(null)
   // default_url + target_url feed the rail's GLOBAL URL control
   // (see RailSettings.jsx) — same /config call, no extra request. target_url
   // is the console-wide current value (server-side, not per case).
@@ -71,9 +81,10 @@ export default function App() {
   const [savingTargetUrl, setSavingTargetUrl] = useState(false)
   const [targetUrlMsg, setTargetUrlMsg] = useState(null)
   // login_username + has_password feed the rail's GLOBAL "Login as" control
-  // (see RailSettings.jsx) — the console-wide default agent login, overridden
-  // per case by the Manual card's own CredentialsRow and falling back itself
-  // to the `.env` admin account.
+  // (see RailSettings.jsx) — the console-wide default agent login and the ONLY
+  // login the console offers, falling back to the `.env` admin account. The
+  // per-case box on the Manual card and the run-level box in this header were
+  // removed on 2026-09-01.
   const [globalUsername, setGlobalUsername] = useState('')
   const [globalPassword, setGlobalPassword] = useState('')
   const [hasGlobalPassword, setHasGlobalPassword] = useState(false)
@@ -84,6 +95,8 @@ export default function App() {
       .then((r) => (r.ok ? r.json() : null))
       .then((c) => {
         setDefaultCycle(c?.default_cycle ?? null)
+        setDefaultCycleKey(c?.default_cycle_key ?? null)
+        setDefaultCycleName(c?.default_cycle_name ?? null)
         setDefaultUrl(c?.default_url ?? null)
         setTargetUrl(c?.target_url ?? '')
         setGlobalUsername(c?.login_username ?? '')
@@ -323,9 +336,9 @@ export default function App() {
       // keeps the "run everything" contract the CLI and older callers rely on.
       const allCaseIds = (livePreview?.test_cases ?? []).map((c) => c.id)
       const picked = allCaseIds.filter((id) => selectedIds.has(id))
+      // No credentials are sent: the rail's global login is the only override
+      // the console offers, and the server resolves it (2026-09-01).
       const { run_id } = await startRun(planKey, {
-        username: runUser,
-        password: runPw,
         caseIds: picked.length && picked.length < allCaseIds.length ? picked : null,
       })
       setRunId(run_id)
@@ -402,7 +415,7 @@ export default function App() {
         onStopAll={handleStopAll}
         stopping={stopping}
         stopMsg={stopMsg}
-        selectable={tab === 'live'}
+        selectable={CASES_ARE_SELECTABLE}
         selectedIds={selectedIds}
         onToggleCase={toggleCase}
         onToggleAll={toggleAllCases}
@@ -430,7 +443,12 @@ export default function App() {
         </nav>
 
         {!manualPlanKey ? (
-          <StartPanel defaultCycle={defaultCycle} onSelectCycle={selectPlan} />
+          <StartPanel
+            defaultCycle={defaultCycle}
+            defaultCycleKey={defaultCycleKey}
+            defaultCycleName={defaultCycleName}
+            onSelectCycle={selectPlan}
+          />
         ) : tab === 'live' ? (
           <>
             <header className="stage-head">
@@ -451,14 +469,6 @@ export default function App() {
               >
                 {runLabel}
               </button>
-              <CredentialsRow
-                username={runUser}
-                password={runPw}
-                onUsernameChange={setRunUser}
-                onPasswordChange={setRunPw}
-                disabled={isRunning}
-                helpText="Leave blank to use the rail's global login (or the .env admin if that's blank too). A case with its own login saved on the Manual tab overrides both."
-              />
             </header>
             <StatStrip state={liveState} />
             <ExecutionTape activeCase={activeCase} />

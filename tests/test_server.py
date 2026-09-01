@@ -1050,11 +1050,18 @@ def test_settings_credentials_endpoint_rejects_malformed_body(client):
     assert r.status_code == 422
 
 
-# ----- Login credential precedence: per-case > run-body > global > .env ----
+# ----- Login credentials: the rail's GLOBAL login, then .env ---------------
+#
+# The Live header's run-level box and the Manual card's per-case box were
+# REMOVED on 2026-09-01, so those two tiers are no longer applied. The tests
+# below deliberately still SET them and assert they are IGNORED: a credential
+# the console cannot show must never decide how a run logs in, and a stale
+# per-case login left in an old manual_sessions/*.json file is exactly that.
 
 
-def test_run_in_background_prefers_run_body_credentials_over_global(tmp_path, monkeypatch):
-    """RUN_CREDENTIALS (the POST /runs body) outranks the global setting."""
+def test_run_body_credentials_are_ignored_in_favour_of_the_global_login(tmp_path, monkeypatch):
+    """A run-level credential can no longer be set from the UI, so even a
+    populated RUN_CREDENTIALS entry must not override the rail's login."""
     import asyncio
 
     monkeypatch.setattr(server_mod, "SETTINGS", server_mod.SettingsStore(tmp_path / "settings.json"))
@@ -1074,7 +1081,7 @@ def test_run_in_background_prefers_run_body_credentials_over_global(tmp_path, mo
 
     asyncio.run(server_mod._run_in_background(state.run_id, "P", state))
 
-    assert captured["credentials"] == ("runbody@duke", "runbodypw")
+    assert captured["credentials"] == ("global@duke", "globalpw")
 
 
 def test_run_in_background_falls_back_to_global_credentials(tmp_path, monkeypatch):
@@ -1123,8 +1130,10 @@ def test_run_in_background_credentials_none_when_neither_set(tmp_path, monkeypat
     assert captured["credentials"] is None
 
 
-def test_run_agent_case_per_case_credentials_beat_global(client, tmp_path, monkeypatch):
-    """Manual-tab per-case login outranks the global setting."""
+def test_stored_per_case_credentials_are_ignored_in_favour_of_the_global_login(client, tmp_path, monkeypatch):
+    """Old manual_sessions/*.json files may still carry a per-case login. With
+    the per-case box gone there is no way to see or clear one, so it must be
+    ignored rather than silently deciding how the case authenticates."""
     import asyncio
 
     from agent.run_state import Step, TestCase, new_run_state as _new_run_state
@@ -1161,7 +1170,7 @@ def test_run_agent_case_per_case_credentials_beat_global(client, tmp_path, monke
     state = _new_run_state("TP-45", "TP-45")
     asyncio.run(server_mod._run_agent_case(state.run_id, "TP-45", "A", state, None))
 
-    assert captured["credentials"] == ("case@duke", "casepw")
+    assert captured["credentials"] == ("global@duke", "globalpw")
 
 
 def test_run_agent_case_falls_back_to_global_credentials_when_no_per_case(client, tmp_path, monkeypatch):
@@ -1246,9 +1255,9 @@ def test_run_agent_case_passes_global_target_url(client, tmp_path, monkeypatch):
     assert captured["target_url"] is None
 
 
-def test_run_agent_case_passes_credentials(client, tmp_path, monkeypatch):
-    """_run_agent_case forwards (username, password) to the orchestrator only
-    when both are non-empty on the case's mark; otherwise None."""
+def test_run_agent_case_ignores_the_marks_credentials(client, tmp_path, monkeypatch):
+    """_run_agent_case no longer reads the case mark's login at all: with no
+    global login set either, it passes None so login() falls back to .env."""
     import asyncio
 
     from agent.run_state import Step, TestCase, new_run_state
@@ -1283,9 +1292,10 @@ def test_run_agent_case_passes_credentials(client, tmp_path, monkeypatch):
     state = new_run_state("TP-45", "TP-45")
     asyncio.run(server_mod._run_agent_case(state.run_id, "TP-45", "A", state, None))
 
-    assert captured["credentials"] == ("u@x.com", "pw")
+    # Saved on the mark, and deliberately NOT used.
+    assert captured["credentials"] is None
 
-    # clearing credentials (both empty) means no credentials are passed
+    # Clearing it changes nothing — it was never consulted either way.
     client.post(
         "/manual/TP-45/cases/A/credentials",
         json={"username": "", "password": ""},
@@ -1866,14 +1876,16 @@ def test_run_push_qmetry_no_body_falls_back_to_env(client, monkeypatch):
     assert calls[0]["mode"] == "create"
 
 
-def test_post_runs_records_credentials_for_the_run(client):
+def test_post_runs_no_longer_records_body_credentials(client):
+    """The body's username/password are still accepted for compatibility but
+    are not stored, so nothing invisible can reach the run."""
     with patch.object(server_mod, "_run_in_background", new=AsyncMock()):
         r = client.post(
             "/runs",
             json={"plan": "SOUSCLOUD-TR-482", "username": "qa@duke", "password": "pw"},
         )
-    run_id = r.json()["run_id"]
-    assert server_mod.RUN_CREDENTIALS[run_id] == ("qa@duke", "pw")
+    assert r.status_code == 200
+    assert r.json()["run_id"] not in server_mod.RUN_CREDENTIALS
 
 
 def test_post_runs_ignores_a_half_filled_login(client):
@@ -1932,7 +1944,9 @@ def test_run_credentials_cleared_when_run_plan_crashes():
 
 
 @pytest.mark.asyncio
-async def test_run_in_background_forwards_credentials_then_clears_them(monkeypatch):
+async def test_run_in_background_uses_the_global_login_and_clears_run_state(monkeypatch):
+    """No per-case map is forwarded any more, and a stale RUN_CREDENTIALS entry
+    is both ignored and cleaned up when the run ends."""
     captured = {}
 
     class FakeOrch:
@@ -1948,7 +1962,10 @@ async def test_run_in_background_forwards_credentials_then_clears_them(monkeypat
 
     await server_mod._run_in_background(state.run_id, "P", state)
 
-    assert captured["credentials"] == ("qa@duke", "pw")
+    # The stale entry is ignored (no global login set in this test -> None,
+    # so login() reads .env) and the bookkeeping still clears it.
+    assert captured["credentials"] is None
+    assert captured["case_credentials"] is None
     assert state.run_id not in server_mod.RUN_CREDENTIALS
 
 
@@ -2130,3 +2147,61 @@ def test_post_runs_falls_back_to_the_raw_plan_without_a_session(client):
     assert r.status_code == 200
     state = client.get(f"/runs/{r.json()['run_id']}").json()
     assert state["plan"]["key"] == "SOUSCLOUD-TP-45"
+
+
+# ----- /config resolves the default cycle's human key ----------------------
+
+
+def test_config_resolves_the_default_cycles_human_key_and_name(client, monkeypatch):
+    """The start panel must offer "SOUSCLOUD-TR-482", not "1ZwYH2ObF7AGZa".
+
+    QMETRY_DEFAULT_CYCLE is normally an INTERNAL cycle id, which the Continue
+    button was printing verbatim at the tester.
+    """
+    monkeypatch.setenv("QMETRY_DEFAULT_CYCLE", "1ZwYH2ObF7AGZa")
+
+    class _Source:
+        async def get_plan(self, plan_key):
+            assert plan_key == "1ZwYH2ObF7AGZa"
+            return {"key": "SOUSCLOUD-TR-482", "name": "Claude - Sample Test Cycle"}
+
+    monkeypatch.setattr(server_mod, "_make_case_source", lambda: _Source())
+    body = client.get("/config").json()
+    assert body["default_cycle"] == "1ZwYH2ObF7AGZa"
+    assert body["default_cycle_key"] == "SOUSCLOUD-TR-482"
+    assert body["default_cycle_name"] == "Claude - Sample Test Cycle"
+
+
+def test_config_still_loads_when_the_default_cycle_cannot_be_resolved(client, monkeypatch):
+    """A renamed cycle or a QMetry outage must not stop the console booting —
+    the key degrades to None and the id still works as the value to open."""
+    monkeypatch.setenv("QMETRY_DEFAULT_CYCLE", "deadbeef")
+
+    class _Source:
+        async def get_plan(self, plan_key):
+            raise RuntimeError("QMetry down")
+
+    monkeypatch.setattr(server_mod, "_make_case_source", lambda: _Source())
+    r = client.get("/config")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["default_cycle"] == "deadbeef"
+    assert body["default_cycle_key"] is None
+    assert body["default_cycle_name"] is None
+
+
+def test_config_skips_resolution_when_no_default_cycle_is_set(client, monkeypatch):
+    """No default cycle -> no QMetry call at all."""
+    monkeypatch.delenv("QMETRY_DEFAULT_CYCLE", raising=False)
+    calls = []
+
+    class _Source:
+        async def get_plan(self, plan_key):
+            calls.append(plan_key)
+            return {"key": "X", "name": "Y"}
+
+    monkeypatch.setattr(server_mod, "_make_case_source", lambda: _Source())
+    body = client.get("/config").json()
+    assert body["default_cycle"] is None
+    assert body["default_cycle_key"] is None
+    assert calls == []

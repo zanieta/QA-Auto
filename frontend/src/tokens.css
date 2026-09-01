@@ -1547,3 +1547,16 @@ button:focus-visible,
   font-size: 0.6875rem;
   color: var(--faint);
 }
+
+/* The start panel's "Continue with …" button names the test run: its human key
+   in mono, then the run's real name on a second line. Never the internal
+   QMetry cycle id, which means nothing to a tester. The name is optional —
+   the button falls back to key-only when /config could not resolve it. */
+.start-panel-continue-name {
+  display: block;
+  margin-top: 4px;
+  font-size: 12px;
+  font-weight: 400;
+  opacity: 0.85;
+  white-space: normal;
+}

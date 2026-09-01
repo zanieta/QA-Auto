@@ -274,7 +274,7 @@ backend therefore handles three query shapes; the frontend just sends `?q=`:
   **A stripe is colour-only**, so the status also rides on the row button's
   `title` and `aria-label` (`"<id> <name>. <status>"`). That is the only
   non-visual carrier of the status; do not remove it.
-- **Case selection (Live run tab only)**: each row carries a checkbox, **all
+- **Case selection (BOTH tabs since 2026-09-01; was Live-run-only)**: each row carries a checkbox, **all
   ticked** when a cycle opens, so pressing Run without touching anything
   behaves exactly as it did before. The section label shows `3 of 4` with an
   `All`/`None` toggle; the Run button reads `▶ Run 3 of 4` and disables at
@@ -385,24 +385,33 @@ saved password (same rule as the Manual tab's per-case
 - **Run button**: primary navy. States: idle ("▶ Run plan"), running (inverts to
   white-on-navy-border, "⏸ Running…"), done ("▶ Run again"). Disabled while a run
   is in progress for other controls.
-- **Login row** (`<CredentialsRow>`, shared with the Manual tab's per-case row and
-  the rail's global row — same "Login as" label, same `.manual-credentials`
-  markup and classes): username + password fields beside the Run button. Both
-  disable while a run is in progress (same rule as the Run button). Help copy:
-  "Leave blank to use the rail's global login (or the .env admin if that's blank
-  too). A case with its own login saved on the Manual tab overrides both." — see
-  "Credential precedence" below. The password here is held in React state only,
-  sent on `POST /runs`, and never echoed back by `GET /runs/{id}`.
+- **No login row.** There used to be a username/password pair beside the Run
+  button. It was REMOVED (2026-09-01) along with the Manual card's per-case
+  pair — see "Credential precedence" below. `POST /runs` no longer carries
+  credentials at all.
 
 #### Credential precedence
-Three places can name an agent login, in override order: **(1)** a case's own
-saved login on the Manual card (`CredentialsRow`, `POST /manual/{plan}/cases/
-{id}/credentials`) — wins for that case only; **(2)** the rail's global "Login
-as" (`POST /settings/credentials`) — the console-wide default; **(3)** the
-`.env` admin account — the fallback when nothing above is set. Blank at any
-level falls through to the next. The Live tab's stage-head login row (above)
-is a same-session, unsaved override typed at Run time — it sits alongside (1)
-and (2) for a single run rather than persisting anywhere.
+**One place names the agent login: the rail's global "Login as"**
+(`POST /settings/credentials`), falling back to the `.env` admin account when
+it is blank. That is the whole chain.
+
+It used to be three deep — a per-case login on the Manual card, a run-level
+pair typed into the Live stage head, then the global row. Both of the first two
+were removed on 2026-09-01 at the user's request: three separate login boxes
+for one concept invited a tester to fill in the wrong one, and the two removed
+tiers outranked the one that is always visible in the rail.
+
+**The removed tiers are no longer applied, not merely hidden.** `server.py`
+ignores `username`/`password` on the `POST /runs` body (still accepted, so an
+older caller does not 400) and no longer reads a case mark's stored login. Old
+`manual_sessions/*.json` files may still hold `login_username` /
+`login_password` from before the change; `ManualMark` keeps parsing them, and
+nothing acts on them. This was deliberate: with no UI to show or clear such a
+value, honouring it would let an invisible credential decide how a case logs
+in, and a case failing to authenticate for a reason the console cannot display
+is worse than a missing feature. `POST /manual/{plan}/cases/{id}/credentials`
+still exists and still stores what it is given — it simply has no caller and
+no effect.
 
 ### 3. Stat strip (`.stat-strip`)
 Four inline stats: Total, Passed (green number), Failed (red number), Elapsed (mono,
@@ -568,9 +577,21 @@ auto-loads, even when `GET /config` returns a `default_cycle`. With no `?cycle=`
 
 - The stage area shows `<StartPanel>` on **both** tabs instead of
   ManualView/Live run — Duke shield, "QA Agent" title, "Choose a test run to
-  begin", a hint pointing at the rail's TR/TC search, a paste-cycle-id input +
+  begin", a hint pointing at the rail's TR/TC search, a paste-key-or-id input +
   Open button, and — only when `default_cycle` is non-null — a "Continue with
-  `<key>`" button.
+  …" button.
+
+  **That button names the test RUN, never the internal cycle id** (fixed
+  2026-09-01). `QMETRY_DEFAULT_CYCLE` is normally an internal id such as
+  `1ZwYH2ObF7AGZa`, and the button used to print it verbatim — meaningless to a
+  tester and not what QMetry's own UI shows. `GET /config` now also returns
+  `default_cycle_key` and `default_cycle_name`, so the button reads
+  `SOUSCLOUD-TR-482` in mono with the run's real name beneath it
+  (`.start-panel-continue-name`). The id is still the value passed to
+  `onSelectCycle`; it is just not the label. When the key cannot be resolved
+  (a renamed cycle, QMetry down) both fields come back null and the button
+  falls back to showing the id, so it is never blank. The paste field's
+  placeholder likewise shows a human key example.
 - No `/manual/*` request is made (`useManualState` is a no-op when its plan
   key is `null` — it never falls back to a fixture).
 - The rail sits in its browse state; progress and the case list belong to the
@@ -644,7 +665,11 @@ the Live tab's status stripes (see "QMetry status stripes" above). It rides on t
 existing cycle case-search response, so it costs no extra QMetry call.
 
 ### Endpoints the Manual tab calls
-- `GET  /config` → `{ "default_cycle": "<idOrKey>" | null, "default_url": "https://test.souscheftech.com/login", "target_url": "", "login_username": "", "has_password": false }`.
+- `GET  /config` → `{ "default_cycle": "<idOrKey>" | null, "default_cycle_key": "SOUSCLOUD-TR-482" | null, "default_cycle_name": "<run name>" | null, "default_url": "https://test.souscheftech.com/login", "target_url": "", "login_username": "", "has_password": false }`.
+  `default_cycle_key`/`default_cycle_name` are the human key and name behind
+  `default_cycle` (which is usually an internal id), resolved server-side for
+  the start panel's Continue button; both are null if resolution fails, and
+  bootstrap still succeeds.
   `default_cycle` is the cycle the console opens when the URL has no
   `?cycle=` (from `QMETRY_DEFAULT_CYCLE`). `default_url` and `target_url` feed
   the rail's GLOBAL URL control (`<RailSettings>`, in the Rail section above);

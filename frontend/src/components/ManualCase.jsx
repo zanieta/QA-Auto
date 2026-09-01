@@ -10,12 +10,10 @@
 import { useEffect, useRef, useState } from 'react'
 
 import Step from './Step.jsx'
-import CredentialsRow from './CredentialsRow.jsx'
 import {
   cancelRun,
   markCase,
   runAgentCase,
-  saveCaseCredentials,
 } from '../hooks/useManualState.js'
 import { useRunState } from '../hooks/useRunState.js'
 
@@ -50,9 +48,6 @@ export default function ManualCase({ plan, testCase, onChanged }) {
   const [agentSel, setAgentSel] = useState(allIndices)
   // which original indices the last-started run covers (for chip mapping)
   const [lastRunSteps, setLastRunSteps] = useState(m.agent_steps ?? null)
-  const [loginUser, setLoginUser] = useState(m.login_username || '')
-  const [loginPw, setLoginPw] = useState('')
-  const [credsMsg, setCredsMsg] = useState(null)
 
   // GUARD: useRunState(null) polls the demo fixture — never let fixture data
   // masquerade as a real agent run.
@@ -65,9 +60,6 @@ export default function ManualCase({ plan, testCase, onChanged }) {
     setAgentRunId(m.agent_run_id || null)
     setAgentSel(testCase.steps.map((_, i) => i))
     setLastRunSteps(m.agent_steps ?? null)
-    setLoginUser(m.login_username || '')
-    setLoginPw('')
-    setCredsMsg(null)
   }, [testCase.id]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const agentRunning =
@@ -134,18 +126,6 @@ export default function ManualCase({ plan, testCase, onChanged }) {
     }
   }
 
-  async function handleSaveCredentials() {
-    setCredsMsg(null)
-    try {
-      await saveCaseCredentials(plan, testCase.id, loginUser, loginPw)
-      setLoginPw('')
-      setCredsMsg(loginUser || loginPw ? 'saved' : 'cleared — using default admin')
-      await onChanged?.()
-    } catch (e) {
-      setCredsMsg(e.message)
-    }
-  }
-
   return (
     <section className="manual-case">
       <header className="manual-case-head">
@@ -207,26 +187,6 @@ export default function ManualCase({ plan, testCase, onChanged }) {
           </dl>
         </div>
       )}
-
-      <CredentialsRow
-        username={loginUser}
-        password={loginPw}
-        onUsernameChange={setLoginUser}
-        onPasswordChange={setLoginPw}
-        disabled={agentRunning}
-        savedPassword={m.has_password}
-        helpText="Overrides the rail's global login for this case only. Leave blank to use the rail's account, or the .env admin if that's blank too."
-      >
-        <button
-          type="button"
-          className="btn btn-ghost"
-          disabled={agentRunning}
-          onClick={handleSaveCredentials}
-        >
-          Save
-        </button>
-        {credsMsg && <span className="manual-credentials-msg">{credsMsg}</span>}
-      </CredentialsRow>
 
       <p className="manual-agent-hint">
         The agent starts from the dashboard after login — do unchecked earlier steps by hand first.

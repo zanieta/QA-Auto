@@ -331,8 +331,14 @@ async def _run_in_background(
             plan_key,
             # Precedence (see Orchestrator.run_plan docstring): per-case >
             # this run-level pair > the global setting > .env.
-            credentials=RUN_CREDENTIALS.get(run_id) or _global_credentials(),
-            case_credentials=_manual_case_credentials(plan_key),
+            # The rail's GLOBAL login is the only override the console can set
+            # (2026-09-01): the run-level box in the Live header and the
+            # per-case box on the Manual card were removed, so their tiers are
+            # no longer applied — a credential that cannot be seen in the UI
+            # must not silently decide how a run logs in. `.env` remains the
+            # final fallback inside `login()`.
+            credentials=_global_credentials(),
+            case_credentials=None,
             target_url=SETTINGS.get("target_url") or None,
             case_ids=case_ids,
         )
@@ -396,21 +402,16 @@ async def _run_agent_case(
     The completion set_agent calls deliberately omit agent_steps — the sentinel
     in ManualStore.set_agent preserves the selection recorded at run start.
     """
-    creds = None
     target_url = SETTINGS.get("target_url") or None
-    session = MANUAL.get(plan)
-    if session is not None:
-        try:
-            mark = session.find_case(case_id).mark
-            if mark.login_username and mark.login_password:
-                creds = (mark.login_username, mark.login_password)
-        except KeyError:
-            pass
-    # Precedence: per-case (above) > the global setting > .env (creds stays
-    # None and login() reads APP_USERNAME/APP_PASSWORD). There is no run-level
-    # POST body for a single Manual-tab agent run, so that tier is skipped here.
-    if creds is None:
-        creds = _global_credentials()
+    # The rail's GLOBAL login, then .env (creds stays None and login() reads
+    # APP_USERNAME/APP_PASSWORD). The per-case login box was removed from the
+    # Manual card on 2026-09-01, so a stored per-case credential is NO LONGER
+    # consulted here: with no UI to show or clear it, honouring it would let an
+    # invisible override decide how this case logs in — and a case failing to
+    # authenticate for a reason the console cannot display is worse than a
+    # missing feature. Old `manual_sessions/*.json` files may still carry the
+    # fields; they are simply ignored.
+    creds = _global_credentials()
     try:
         # headless=True: a Manual-tab run must not pop a browser window over
         # the console the tester is reading. Live run still honours HEADLESS.
@@ -459,9 +460,33 @@ async def _run_agent_case(
 async def get_config() -> dict:
     """Non-secret frontend bootstrap: which cycle to open by default, the
     global target URL and its current value, and the global default login
-    username (never the password — see agent/settings.py)."""
+    username (never the password — see agent/settings.py).
+
+    `default_cycle` is whatever `QMETRY_DEFAULT_CYCLE` holds, which is
+    normally an INTERNAL QMetry cycle id like "1ZwYH2ObF7AGZa". The start
+    panel used to print that id at the tester, which is meaningless to them
+    and is not what QMetry's own UI shows, so `default_cycle_key` and
+    `default_cycle_name` carry the human key ("SOUSCLOUD-TR-482") and the
+    cycle's real name alongside it. Resolving costs one cached QMetry call;
+    any failure degrades to None rather than breaking console bootstrap —
+    the id still works as the value to open.
+    """
+    default_cycle = os.environ.get("QMETRY_DEFAULT_CYCLE") or None
+    cycle_key: str | None = None
+    cycle_name: str | None = None
+    if default_cycle:
+        try:
+            meta = await _make_case_source().get_plan(default_cycle)
+            cycle_key = meta.get("key") or None
+            cycle_name = meta.get("name") or None
+        except Exception:
+            # A bad/renamed QMETRY_DEFAULT_CYCLE, or QMetry being down, must
+            # not stop the console loading — the panel falls back to the id.
+            log.warning("Could not resolve QMETRY_DEFAULT_CYCLE %r", default_cycle)
     return {
-        "default_cycle": os.environ.get("QMETRY_DEFAULT_CYCLE") or None,
+        "default_cycle": default_cycle,
+        "default_cycle_key": cycle_key,
+        "default_cycle_name": cycle_name,
         "default_url": os.environ.get("APP_BASE_URL") or None,
         "target_url": SETTINGS.get("target_url") or "",
         **SETTINGS.credentials_dict(),
@@ -602,8 +627,9 @@ async def start_run(body: StartRunBody) -> dict:
     LATEST[state.run_id] = state.to_dict()
     LISTENERS.setdefault(state.run_id, [])
 
-    if body.username and body.password:
-        RUN_CREDENTIALS[state.run_id] = (body.username, body.password)
+    # `username`/`password` on this body are accepted for compatibility but
+    # NO LONGER APPLIED (2026-09-01) — see the credentials note in
+    # _run_in_background. The rail's global login is the only console override.
 
     task = asyncio.create_task(
         _run_in_background(state.run_id, body.plan, state, case_ids=body.case_ids)

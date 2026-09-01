@@ -706,13 +706,26 @@ this. `max_rounds`=6 and `step_attempt_budget_s` remain the backstops, and
 expand-then-collapse converges on its own (the collapse adds no new name, so
 the next round breaks).
 
-**Login credential precedence (2026-08-19).** Highest wins:
-1. per-case credentials (Manual tab, `ManualStore.set_credentials`)
-2. credentials passed in the `POST /runs` request body (run-level, held only
-   in `server.RUN_CREDENTIALS` for the run's lifetime)
-3. the global default login (`agent/settings.py`'s `SettingsStore`,
-   console-wide, survives a restart)
-4. `.env` `APP_USERNAME`/`APP_PASSWORD`
+**Login credential precedence — COLLAPSED TO TWO TIERS (2026-09-01).**
+Highest wins:
+1. the global default login (`agent/settings.py`'s `SettingsStore`, set from
+   the rail's "Login as", console-wide, survives a restart)
+2. `.env` `APP_USERNAME`/`APP_PASSWORD`
+
+The two tiers that used to sit above these — a per-case login on the Manual
+card and a run-level pair in the `POST /runs` body — had their UI removed at
+the user's request, and are **no longer applied**. `server.py` ignores
+`username`/`password` on the run body (still accepted so an older caller does
+not 400) and no longer reads a case mark's stored login; `_run_in_background`
+passes `case_credentials=None`. Old `manual_sessions/*.json` files may still
+carry `login_username`/`login_password`; they are parsed and ignored. The
+reasoning: with no UI to show or clear such a value, honouring it would let an
+invisible credential decide how a case authenticates, and a case failing to log
+in for a reason the console cannot display is worse than a missing feature.
+`POST /manual/{plan}/cases/{id}/credentials` and `_manual_case_credentials()`
+still exist and still work; they have no caller and no effect on a run.
+
+The historical four-tier chain (2026-08-19) was:
 `Orchestrator.run_plan`/`run_single_case` only ever see tiers 1-2 collapsed
 into their `credentials`/`case_credentials` arguments (unchanged logic:
 `per_case.get(case_id) or credentials`) — server.py resolves tier 3 before
@@ -827,7 +840,12 @@ FastAPI app. Endpoints (exactly what the frontend calls — see FRONTEND.md):
 - `GET /config` → non-secret frontend bootstrap: `default_cycle`, `default_url`
   (`APP_BASE_URL`), `target_url` — the current GLOBAL server override (`""`
   when unset) — and `login_username` + `has_password` for the GLOBAL default
-  login (never the password itself).
+  login (never the password itself). Also `default_cycle_key` and
+  `default_cycle_name` (2026-09-01): `QMETRY_DEFAULT_CYCLE` is normally an
+  INTERNAL cycle id like `1ZwYH2ObF7AGZa`, and the start panel's "Continue
+  with …" button was printing it at the tester. The endpoint resolves the human
+  key + name via one cached `get_plan()` call, and degrades both to `None` on
+  any failure rather than breaking console bootstrap.
 - `POST /settings/target-url` `{"url": "https://…"}` → set the GLOBAL target
   URL for every run (full-plan and single-case Manual runs alike); `""` clears
   back to `APP_BASE_URL`. 422 on a malformed URL (not `http`/`https`, or no
