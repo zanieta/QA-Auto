@@ -787,6 +787,16 @@ class Orchestrator:
         # and the evaluator reads the whole list as PERFORMED ACTIONS.
         seen_elements: dict[str, dict[str, Any]] = {}
 
+        # The (tag, name) pairs the PREVIOUS round planned from. Compared per
+        # round to spot a same-page reveal — a submenu expanding, a modal
+        # opening. Compared by NAME, never by ref: refs are assigned per
+        # snapshot and renumber every time, so every element would look new.
+        prev_names: set[tuple[str, str]] | None = None
+        # Set when a round ran entirely on one page. The next round's own
+        # snapshot then decides: new names = the page revealed something, keep
+        # going; nothing new = the step really is done.
+        check_for_reveal = False
+
         for _round in range(max_rounds):
             if _round > 0 and not prev_round_had_actions:
                 if (time.monotonic() - attempt_start) > self.step_attempt_budget_s:
@@ -798,9 +808,49 @@ class Orchestrator:
                 elements = await browser.snapshot_elements()
             except Exception:
                 elements = []
+            # Hidden entries carry ref=None, so this guard also keeps them out
+            # of seen_elements — which _format_detail reads to name what was
+            # clicked. Naming something the agent never touched is exactly the
+            # class of bug that caused the 2026-08-27 false PASSes.
             for _el in elements:
                 if _el.get("ref"):
                     seen_elements[_el["ref"]] = _el
+
+            # A same-page round just finished. Its actions either revealed new
+            # UI (a submenu expanded, a modal opened) or the step is complete.
+            # Deciding HERE, from this round's own snapshot, is what makes the
+            # check nearly free: a step that revealed nothing pays one DOM
+            # query and NO model call.
+            # VISIBLE elements only (`e.get("ref")`). A hidden entry carries the
+            # same (tag, name) as the element it becomes once revealed, so
+            # counting hidden entries here would mean "Edit Inventory" was
+            # already known in round 1 and its appearance in round 2 registered
+            # as nothing new — the loop would break and TC-1985 would still
+            # fail. The reveal we are detecting is precisely a hidden element
+            # BECOMING visible.
+            names = {
+                (e.get("tag") or "", e.get("name") or "")
+                for e in elements
+                if e.get("ref")
+            }
+            if check_for_reveal:
+                revealed = names - (prev_names or set())
+                if not revealed:
+                    break  # nothing new on the page — the step is done
+                log.info(
+                    "Same-page reveal on step %d of %s: %d new element(s) — re-observing",
+                    orig_index + 1, case_id, len(revealed),
+                )
+                # The reveal itself is evidence the evaluator needs (an open
+                # submenu is transient), and the action that caused it got no
+                # frame: it was the last of a same-page plan.
+                try:
+                    await browser.wait_for_settle(quiet_ms=400, timeout_ms=3_000)
+                    frames.append(await browser.screenshot())
+                except Exception:
+                    pass  # a lost frame never fails the step
+            check_for_reveal = False
+            prev_names = names
 
             context = f"current URL: {await browser.current_url()}"
             if expected:
@@ -908,7 +958,15 @@ class Orchestrator:
             if len(executed_actions) >= max_actions:
                 break
             if not navigated:
-                break  # whole plan ran on one page — step complete (fast path)
+                # "The URL did not change" is NOT the same fact as "the step is
+                # complete", and conflating them is what made TC-1985
+                # unreachable: clicking a collapsible nav parent expands a
+                # submenu without navigating, so the step ended before the
+                # model ever saw the child it needed. Let the next round's
+                # snapshot settle it (see check_for_reveal above); when nothing
+                # was revealed it breaks there, one cheap DOM query later.
+                check_for_reveal = True
+                continue
 
         # --- screenshot + evaluate --------------------------------------------
         try:

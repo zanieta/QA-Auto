@@ -1138,6 +1138,141 @@ async def test_act_observe_loop_is_round_capped():
     assert state.test_cases[0].steps[0].status == "blocked"
 
 
+@pytest.mark.asyncio
+async def test_same_page_reveal_reobserves_instead_of_ending_the_step():
+    """The TC-1985 fix. Clicking a collapsible nav parent expands a submenu
+    WITHOUT navigating, so the old `if not navigated: break` ended the step
+    before the model ever saw the revealed child — it could only guess among
+    the visible top-level items. A snapshot carrying names the previous one
+    lacked now continues the loop."""
+    cases = [{"id": "A", "name": "Alpha", "steps": [
+        {"action": "Go to Recipe > Edit Inventory", "expected": "Inventory page"},
+    ]}]
+    azure = _fake_azure(
+        translate_side_effect=[
+            [{"action": "click", "ref": "e7", "value": None}],   # click Recipe (no nav)
+            [{"action": "click", "ref": "e9", "value": None}],   # click the revealed child
+            [],                                                  # done
+        ],
+        evaluate_side_effect=[{"status": "pass", "reason": "on the inventory page"}],
+    )
+    browser = _fake_browser()
+    browser.snapshot_elements = AsyncMock(side_effect=[
+        # round 1: the submenu is collapsed
+        [{"ref": "e7", "tag": "a", "role": "", "name": "Recipe"}],
+        # round 2: the click revealed a child -> a NEW name -> keep going
+        [{"ref": "e7", "tag": "a", "role": "", "name": "Recipe"},
+         {"ref": "e9", "tag": "a", "role": "", "name": "Edit Inventory"}],
+        # round 3: nothing new after the child click
+        [{"ref": "e9", "tag": "a", "role": "", "name": "Edit Inventory"}],
+    ])
+    orch = Orchestrator(
+        azure=azure,
+        browser_factory=lambda: browser,
+        case_source=FakeCaseSource({"key": "X", "name": "x"}, cases),
+        on_update=lambda s: None,
+    )
+    state = await orch.run_single_case("A")
+    step = state.test_cases[0].steps[0]
+    assert step.status == "pass"
+    # It got a SECOND chance to plan, which is the whole point.
+    assert azure.translate_step.await_count >= 2
+    ctx2 = azure.translate_step.call_args_list[1].kwargs["app_context"]
+    assert "PROGRESS" in ctx2
+
+
+@pytest.mark.asyncio
+async def test_same_page_with_nothing_revealed_keeps_the_fast_path():
+    """An ordinary same-page step (fill, click Save) must still cost exactly
+    ONE model call. The re-observe check reuses the next round's own snapshot,
+    so a no-reveal step pays one cheap DOM query and no extra translate."""
+    cases = [{"id": "A", "name": "Alpha", "steps": [
+        {"action": "Click go", "expected": "Saved"},
+    ]}]
+    azure = _fake_azure(
+        translate_side_effect=[_ok_actions()],
+        evaluate_side_effect=[{"status": "pass", "reason": "saved"}],
+    )
+    browser = _fake_browser()  # returns the SAME single element every call
+    orch = Orchestrator(
+        azure=azure,
+        browser_factory=lambda: browser,
+        case_source=FakeCaseSource({"key": "X", "name": "x"}, cases),
+        on_update=lambda s: None,
+    )
+    state = await orch.run_single_case("A")
+    assert state.test_cases[0].steps[0].status == "pass"
+    assert azure.translate_step.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_expand_then_collapse_terminates():
+    """Clicking a toggle twice collapses it again, which adds no new name, so
+    the loop must end rather than oscillate."""
+    cases = [{"id": "A", "name": "Alpha", "steps": [
+        {"action": "Open the Recipe menu", "expected": "Submenu shown"},
+    ]}]
+    azure = _fake_azure(
+        translate_side_effect=[
+            [{"action": "click", "ref": "e7", "value": None}],
+            [{"action": "click", "ref": "e7", "value": None}],
+            [{"action": "click", "ref": "e7", "value": None}],
+        ],
+        evaluate_side_effect=[{"status": "pass", "reason": "ok"}],
+    )
+    browser = _fake_browser()
+    expanded = [{"ref": "e7", "tag": "a", "role": "", "name": "Recipe"},
+                {"ref": "e9", "tag": "a", "role": "", "name": "Edit Inventory"}]
+    collapsed = [{"ref": "e7", "tag": "a", "role": "", "name": "Recipe"}]
+    browser.snapshot_elements = AsyncMock(side_effect=[collapsed, expanded, collapsed])
+    orch = Orchestrator(
+        azure=azure,
+        browser_factory=lambda: browser,
+        case_source=FakeCaseSource({"key": "X", "name": "x"}, cases),
+        on_update=lambda s: None,
+    )
+    state = await orch.run_single_case("A")
+    assert state.test_cases[0].steps[0].status == "pass"
+    # Round 1 expands (translate #1), round 2 collapses it again
+    # (translate #2). Round 3's own snapshot shows the re-collapsed page —
+    # no new name versus round 2's expanded prev_names — so it breaks there
+    # without a 3rd translate. "Twice" in the docstring above is the count.
+    assert azure.translate_step.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_hidden_entries_never_reach_the_performed_action_detail():
+    """seen_elements feeds _format_detail, whose target-erasure caused the
+    2026-08-27 false PASSes. A ref-less hidden entry must never enter it and
+    must never be named as something the agent performed."""
+    cases = [{"id": "A", "name": "Alpha", "steps": [
+        {"action": "Go to Recipe > Edit Inventory", "expected": "Inventory"},
+    ]}]
+    azure = _fake_azure(
+        translate_side_effect=[[{"action": "click", "ref": "e7", "value": None}], []],
+        evaluate_side_effect=[{"status": "pass", "reason": "ok"}],
+    )
+    browser = _fake_browser()
+    snap = [
+        {"ref": "e7", "tag": "a", "role": "", "name": "Recipe"},
+        {"ref": None, "hidden": True, "parent_ref": "e7", "parent": "Recipe",
+         "tag": "a", "role": "", "name": "Edit Inventory"},
+    ]
+    browser.snapshot_elements = AsyncMock(return_value=snap)
+    orch = Orchestrator(
+        azure=azure,
+        browser_factory=lambda: browser,
+        case_source=FakeCaseSource({"key": "X", "name": "x"}, cases),
+        on_update=lambda s: None,
+    )
+    state = await orch.run_single_case("A")
+    step = state.test_cases[0].steps[0]
+    assert "Recipe" in step.detail
+    assert "Edit Inventory" not in step.detail
+    performed = azure.evaluate_result.call_args.kwargs["performed"]
+    assert "Edit Inventory" not in performed
+
+
 # ----- PERFORMED ACTIONS reach the evaluator ---------------------------------
 
 
