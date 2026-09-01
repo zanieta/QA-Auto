@@ -271,6 +271,20 @@ Tests use mocked httpx + a mocked Playwright Page — they never hit the network
 launch Chromium. A green suite is not proof that real Azure / Playwright work;
 that's what `main.py --dry-run` is for.
 
+**Running a real QMetry case from the CLI needs `--push-qmetry` — that flag is
+what selects `QMetryCaseSource` (2026-09-01, discovered live).** Without it,
+`Orchestrator` defaults to `FixtureCaseSource`, whose `get_plan`/`list_cases`
+**ignore the `--plan`/`--testcase` value entirely** and always serve
+`fixtures/sample_plan.json`. So `main.py --plan TC:SOUSCLOUD-TC-1985` (no
+`--push-qmetry`) exits 0 and prints a report — but it silently ran the
+fixture's three cases, not the real TC-1985; nothing about the output says
+so. For a `TC:<key>` standalone plan specifically, adding `--push-qmetry` is
+safe and does NOT write anything back — a standalone case has no cycle and
+therefore no execution id, so `_push_to_qmetry` skips it (`skip <case
+id>: no QMetry execution id`); the flag's only effect there is switching the
+source. For a real cycle key, `--push-qmetry` really does write results, so
+don't add it to a real cycle run casually.
+
 ---
 
 ## Frontend commands
