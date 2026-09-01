@@ -250,12 +250,15 @@ def test_snapshot_js_destructures_both_caps():
     can't quietly drop the cap while keeping the bare identifier somewhere
     else in the block. Also pins that the two `if (out.length >= capN) return
     out;` early exits in the visible pass — which the brief said must not
-    change — are both still present.
+    change — are both still present, and that BOTH `hidden.length >= capH`
+    guards survive (a count, not a loose containment check — one guard
+    alone would still leave the hidden pass able to run one iteration past
+    its budget before the outer loop notices).
     """
     js = browser_mod._SNAPSHOT_JS
     assert "({maxN, maxHidden})" in js
     hidden_block = js.split("// ---- hidden children")[1]
-    assert "hidden.length >= capH" in hidden_block
+    assert hidden_block.count("hidden.length >= capH") == 2
     assert js.count("if (out.length >= capN) return out;") == 2
 
 

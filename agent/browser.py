@@ -142,20 +142,34 @@ _SNAPSHOT_JS = """
   // empty parent_ref: Python drops those anyway, and a hint nobody can act on
   // is worse than silence.
   const hidden = [];
+  // A SEPARATE Set from the visible pass's `seen` — that one already
+  // contains every element matching ANY of `sels`, because the visible pass
+  // adds to it before its own visibility check, so reusing it here would
+  // filter out every hidden candidate too (found in review round 2, second
+  // occurrence of the same dead-code bug: round 2's own fix still shared
+  // `seen` across both passes). `hiddenSeen` dedupes only WITHIN this pass's
+  // own selector groups (an element can match more than one of `sels`, e.g.
+  // a[href] and [role=link]).
+  const hiddenSeen = new Set();
   let tried = 0;  // candidate budget, independent of capH — see below
   hiddenScan:
   for (const sel of sels) {
     if (hidden.length >= capH) break;
     for (const el of document.querySelectorAll(sel)) {
       if (hidden.length >= capH) break;
-      if (seen.has(el) || tagged.has(el)) continue;
-      seen.add(el);
+      // `tagged` is the correct cross-pass guard: it means "the visible
+      // pass already gave this element a ref", which is the actual thing
+      // to exclude. The visible pass's `seen` must NOT be reused here (see
+      // the comment on `hiddenSeen` above).
+      if (tagged.has(el)) continue;
+      if (hiddenSeen.has(el)) continue;
+      hiddenSeen.add(el);
       const r = el.getBoundingClientRect();
       const st = window.getComputedStyle(el);
       if (r.width > 0 && r.height > 0 &&
           st.visibility !== 'hidden' && st.display !== 'none') continue;
       const name = (el.getAttribute('aria-label') || el.getAttribute('title') ||
-        el.textContent || '').replace(/\s+/g, ' ').trim();
+        el.textContent || '').replace(/\\s+/g, ' ').trim();
       if (!name) continue;
       // A candidate that reaches this point pays for a full ancestor climb
       // plus a subtree scan per level below, whether or not it ends up
@@ -165,15 +179,18 @@ _SNAPSHOT_JS = """
       if (++tried > 300) break hiddenScan;
       // The nearest ancestor actually doing the hiding — seeded with the
       // element itself, since legacy jQuery .hide() sets display:none on
-      // the element directly, not just a wrapping container. If neither the
-      // element nor an ancestor within 2 levels is hidden by style, the
-      // element is invisible for some other reason (opacity:0, clip-path,
-      // max-height:0 — all already caught as VISIBLE, and so already
-      // excluded, by the bounding-rect check in the earlier pass) and there
-      // is no toggle to name.
+      // the element directly, not just a wrapping container. Unbounded
+      // climb: this walk's cost is already bounded by the `tried` budget
+      // above, not by depth here — round 2 review found a depth-2 cap on
+      // THIS walk silently dropped elements nested deeper than 2 levels
+      // inside their hiding container. The depth cap belongs only on the
+      // TOGGLE climb below. If no ancestor (including `el` itself) is
+      // hidden by style, the element is invisible for some other reason
+      // (opacity:0, clip-path, max-height:0 — all already caught as
+      // VISIBLE, and so already excluded, by the bounding-rect check in
+      // the earlier pass) and there is no toggle to name.
       let hider = null;
-      for (let box = el, depth = 0; box && box !== document.body && depth <= 2;
-           box = box.parentElement, depth++) {
+      for (let box = el; box && box !== document.body; box = box.parentElement) {
         const bs = window.getComputedStyle(box);
         if (bs.display === 'none' || bs.visibility === 'hidden') { hider = box; break; }
       }
@@ -209,7 +226,7 @@ _SNAPSHOT_JS = """
       hidden.push({ref: null, hidden: true,
                    parent_ref: toggle.getAttribute('data-agent-ref'),
                    parent: ((toggle.innerText || toggle.getAttribute('aria-label') ||
-                             '').replace(/\s+/g, ' ').trim()).slice(0, 40),
+                             '').replace(/\\s+/g, ' ').trim()).slice(0, 40),
                    tag: el.tagName.toLowerCase(),
                    role: el.getAttribute('role') || '',
                    name: name.slice(0, 80)});
