@@ -128,6 +128,16 @@ QMETRY_PROJECT_ID=<numeric project id>   # REQUIRED — projectId filter for the
                                   # blank value returns the wrong set instead
                                   # of erroring.
 QMETRY_DEFAULT_CYCLE=             # optional; cycle the console opens with
+QMETRY_EXECUTION_MODE=edit        # edit | create — the DEFAULT execution a push
+                                  # writes to, when the caller sends no `mode`.
+                                  #   edit   — write into the case's existing
+                                  #     execution, REPLACING its current results
+                                  #   create — make a fresh execution run in the
+                                  #     same cycle on every push
+                                  # Both console push buttons ask the tester
+                                  # (Current execution / New execution) and send
+                                  # the choice, so this only decides the CLI's
+                                  # and an unparameterised call's behaviour.
 
 # Jira (Atlassian)
 JIRA_BASE_URL=https://dukemanufacturing.atlassian.net
@@ -738,6 +748,20 @@ full-plan run; per-case mark or the global setting for a Manual single-case
 run), and tier 4 is `login()`'s own fallback when `credentials` is still
 `None`. The orchestrator module has no idea the global setting exists.
 
+**Case test data + precondition now reach the model (2026-09-03).** `_case_brief`
+built the translator's case context from the case id, name and step action texts
+only — so the case-level QMetry parameter table (`test_data`, e.g. TC-1985's
+`Menu=Recipe, SubMenu=Edit Inventory`) and the `precondition` were fetched,
+carried on the same case dict, rendered in the console for the tester, and never
+shown to the agent. Per-STEP `test_data` was always folded into the instruction
+(`action_text`, orchestrator ~line 637); the case-level table simply had no path
+to the prompt. It now emits `PRECONDITION:` and a `CASE TEST DATA — use these
+exact values, never invent substitutes:` block ahead of `Steps:`, each only when
+non-empty, so a case with neither produces byte-identical context to before.
+Precondition is whitespace-collapsed and capped at 500 chars so a long one can't
+crowd the element snapshot out of the prompt. One edit covers every path —
+`run_plan`, `run_single_case` and dry-run all thread `case_context`.
+
 **PAGE DATA block (2026-08-13).** TC-2915 ("Verify Cannot Edit Email Address to
 One That Already Exists") has empty QMetry `test_data`, so the model invented
 `existing.user@example.com` — an address that exists nowhere — and the app
@@ -828,6 +852,28 @@ FastAPI app. Endpoints (exactly what the frontend calls — see FRONTEND.md):
 - `POST /runs/{id}/report` → generate HTML report, return its path/url.
 - `POST /runs/{id}/log-bugs` → create Jira bugs for failed cases. Gated action —
   only succeeds on a finished run that has failures.
+- `POST /runs/{id}/push-qmetry` `{"mode": "edit"|"create"}` (body optional) →
+  write a finished run's case + per-step results to QMetry. **Never automatic:**
+  there is no `push_to_qmetry` flag anywhere in the orchestrator, so a run
+  started from the console writes nothing until this is called. Four gates, all
+  409: QMetry not configured; the run is not `done`; the plan is a `TC:`
+  standalone (no cycle, so no execution to write to); and — **ALL-PASS
+  (2026-09-03, the tester's explicit call)** — any case that did not resolve
+  `pass`. The consequence is deliberate and worth knowing before you "fix" it:
+  the agent's fail/blocked verdicts NEVER reach QMetry, so bad news is recorded
+  by hand. Reverting is a one-condition change in both this endpoint and
+  `StageFoot.jsx`.
+  Returns `{pushed, skipped, errors, details, steps_written, step_errors}`.
+  `details` is per case: `{case, exec_id, steps_written, step_errors}` where
+  `step_errors` is the ARRAY from `WriteResult`; the two top-level counts are
+  sums (`step_errors` a COUNT, not an array — the shapes differ on purpose, and
+  the frontend consumes both). Those exist because
+  `write_case_execution` records a failed per-step post and never re-raises
+  (`agent/qmetry.py:879`), so before this the endpoint could report a clean
+  push while every step row silently failed.
+  **Caveat unchanged:** step results map onto QMetry's rows BY POSITION, which
+  only holds for a FULL plan run — a `case_ids`-filtered run can misalign, and
+  the all-pass gate does not fix that.
 - `POST /stop` → EMERGENCY STOP. Cancels every not-done task in `TASKS` — the
   Live-run plan and any Manual-tab per-case agent run — via the same
   `task.cancel()` the per-run endpoint uses, so per-case `finally` blocks and
@@ -881,6 +927,18 @@ FastAPI app. Endpoints (exactly what the frontend calls — see FRONTEND.md):
 - `POST /manual/{plan}/cases/{id}/credentials` → per-case login override.
 - `POST /manual/{plan}/cases/{id}/run-agent` → run one case with the agent.
 - `POST /manual/{plan}/push-qmetry` → gated push of manual results to QMetry.
+  Gates (409): QMetry unconfigured; a `TC:` standalone plan; nothing marked;
+  and — **ALL-PASS (2026-09-03)** — any MARKED case marked `fail` or `blocked`.
+  Unmarked cases are still skipped, not blocking. Same response shape as the
+  run endpoint above, and it also writes `compose_comment` (note + flagged
+  steps + `agent_note`) onto the execution.
+  **Both push endpoints call `invalidate_case_cache(plan)` after a successful
+  push** (wrapped so it can never raise out of the endpoint). Without it
+  `_CASES_CACHE_TTL_S = 60` kept serving the pre-push case list, whose
+  `executionResult` drives the rail stripes and the `QMetry: <verdict>` pill —
+  so a push appeared to do nothing for a minute. Re-reading those badges after
+  the console's automatic post-push refetch is how a tester confirms the write
+  landed without leaving the console.
 - Serves `frontend/dist` as static files in production.
 CORS: allow only `FRONTEND_ORIGIN`.
 

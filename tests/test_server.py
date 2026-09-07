@@ -1363,6 +1363,28 @@ def test_push_qmetry_409_when_nothing_marked(client, tmp_path, monkeypatch):
     assert "nothing" in r.json()["detail"].lower()
 
 
+def test_push_qmetry_409_when_a_marked_case_did_not_pass(client, tmp_path, monkeypatch):
+    """Push is only allowed on an all-pass result — the user's explicit call.
+    One failing marked case must 409 the whole push, not skip it quietly."""
+    monkeypatch.setattr("agent.manual_state.MANUAL_DIR", tmp_path)
+    server_mod.MANUAL = server_mod.ManualStore()
+    cases = [
+        {"id": "A", "name": "Case A", "steps": [], "_qmetry_execution_id": 111},
+        {"id": "B", "name": "Case B", "steps": [], "_qmetry_execution_id": 222},
+    ]
+    monkeypatch.setattr(server_mod, "_make_case_source", lambda: _fake_case_source(cases))
+    monkeypatch.setattr(server_mod, "_qmetry_configured", lambda: True)
+    client.get("/manual/TP-45")
+    client.post("/manual/TP-45/cases/A/mark", json={"status": "fail", "comment": "x", "failed_steps": [0]})
+    client.post("/manual/TP-45/cases/B/mark", json={"status": "pass"})
+
+    r = client.post("/manual/TP-45/push-qmetry")
+    assert r.status_code == 409
+    detail = r.json()["detail"].lower()
+    assert "1" in detail
+    assert "all-pass" in detail
+
+
 def test_push_qmetry_posts_marked_cases(client, tmp_path, monkeypatch):
     monkeypatch.setattr("agent.manual_state.MANUAL_DIR", tmp_path)
     server_mod.MANUAL = server_mod.ManualStore()
@@ -1375,11 +1397,16 @@ def test_push_qmetry_posts_marked_cases(client, tmp_path, monkeypatch):
     monkeypatch.setattr(server_mod, "_qmetry_configured", lambda: True)
     monkeypatch.setattr(server_mod, "_qmetry_execution_mode", lambda: "edit")
     client.get("/manual/TP-45")
-    client.post("/manual/TP-45/cases/A/mark", json={"status": "fail", "comment": "x", "failed_steps": [0]})
+    # Case-level mark is "pass" (the all-pass push gate), but a step is still
+    # individually flagged — a tester can pass a case while noting a step.
+    client.post("/manual/TP-45/cases/A/mark", json={"status": "pass", "comment": "x", "failed_steps": [0]})
     client.post(
         "/manual/TP-45/cases/A/steps/0/mark",
         json={"status": "fail", "note": "broke on save"},
     )
+    # The per-step mark endpoint re-derives the case status from step marks
+    # (fail > blocked > pass), so force it back to "pass" to satisfy the gate.
+    client.post("/manual/TP-45/cases/A/mark", json={"status": "pass", "comment": "x", "failed_steps": [0]})
     client.post("/manual/TP-45/cases/B/mark", json={"status": "pass"})
 
     called = {}
@@ -1400,8 +1427,8 @@ def test_push_qmetry_posts_marked_cases(client, tmp_path, monkeypatch):
     body = r.json()
     assert body["pushed"] == ["A"]
     assert "B" in body["skipped"]
-    # A's write was recorded with the fail status
-    assert called["case_status"] == "fail"
+    # A's write was recorded with the pass status
+    assert called["case_status"] == "pass"
     # The composed comment for case A: case-level note ("x") plus one line per
     # marked step ("Step 1: fail — broke on save"), per compose_comment's
     # per-step-line format (docs/superpowers/specs/2026-07-09-step-marks...).
@@ -1428,7 +1455,7 @@ def test_push_qmetry_per_case_error_is_non_fatal(client, tmp_path, monkeypatch):
     monkeypatch.setattr(server_mod, "_qmetry_configured", lambda: True)
     monkeypatch.setattr(server_mod, "_qmetry_execution_mode", lambda: "edit")
     client.get("/manual/TP-45")
-    client.post("/manual/TP-45/cases/A/mark", json={"status": "fail", "comment": "broke", "failed_steps": [0]})
+    client.post("/manual/TP-45/cases/A/mark", json={"status": "pass", "comment": "broke", "failed_steps": [0]})
     client.post("/manual/TP-45/cases/B/mark", json={"status": "pass"})
 
     async def _writer(clientobj, **kwargs):
@@ -1518,6 +1545,10 @@ def test_push_qmetry_writes_per_step(client, tmp_path, monkeypatch):
     client.get("/manual/TP-45")
     client.post("/manual/TP-45/cases/A/steps/0/mark", json={"status": "pass"})
     client.post("/manual/TP-45/cases/A/steps/1/mark", json={"status": "fail", "note": "bad"})
+    # A per-step mark re-derives case.mark.status (fail > blocked > pass); force
+    # the case-level mark back to "pass" to satisfy the all-pass push gate,
+    # while still exercising per-step results in the write.
+    client.post("/manual/TP-45/cases/A/mark", json={"status": "pass", "comment": "", "failed_steps": []})
 
     called = {}
     async def _writer(clientobj, **kwargs):
@@ -1537,7 +1568,97 @@ def test_push_qmetry_writes_per_step(client, tmp_path, monkeypatch):
     assert called["mode"] == "edit"
     assert called["step_results"][0][0] == "pass"
     assert called["step_results"][1][0] == "fail"
-    assert called["case_status"] == "fail"
+    assert called["case_status"] == "pass"
+
+
+def test_manual_push_qmetry_returns_details_and_step_totals(client, tmp_path, monkeypatch):
+    """WriteResult per-step data must reach the caller on the manual endpoint
+    too — previously thrown away."""
+    monkeypatch.setattr("agent.manual_state.MANUAL_DIR", tmp_path)
+    server_mod.MANUAL = server_mod.ManualStore()
+    cases = [
+        {"id": "A", "name": "Case A", "steps": [{"action": "Click Save", "expected": "ok"}],
+         "_qmetry_execution_id": 111},
+    ]
+    monkeypatch.setattr(server_mod, "_make_case_source", lambda: _fake_case_source(cases))
+    monkeypatch.setattr(server_mod, "_qmetry_configured", lambda: True)
+    monkeypatch.setattr(server_mod, "_qmetry_execution_mode", lambda: "edit")
+    client.get("/manual/TP-45")
+    client.post("/manual/TP-45/cases/A/mark", json={"status": "pass"})
+
+    async def _writer(clientobj, **kwargs):
+        from agent.qmetry import WriteResult
+        return WriteResult(
+            exec_id=111, steps_written=0,
+            errors=[{"step_index": 0, "step_exec_id": 42, "error": "boom"}],
+        )
+    monkeypatch.setattr("agent.qmetry.write_case_execution", _writer)
+    fake = AsyncMock(); fake.aclose = AsyncMock()
+    monkeypatch.setattr("agent.qmetry.QMetryClient", lambda **kw: fake)
+
+    r = client.post("/manual/TP-45/push-qmetry")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["pushed"] == ["A"]
+    assert body["steps_written"] == 0
+    assert body["step_errors"] == 1
+    assert body["details"] == [{
+        "case": "A", "exec_id": 111, "steps_written": 0,
+        "step_errors": [{"step_index": 0, "step_exec_id": 42, "error": "boom"}],
+    }]
+
+
+def test_manual_push_qmetry_invalidates_cache_on_success(client, tmp_path, monkeypatch):
+    monkeypatch.setattr("agent.manual_state.MANUAL_DIR", tmp_path)
+    server_mod.MANUAL = server_mod.ManualStore()
+    cases = [
+        {"id": "A", "name": "Case A", "steps": [{"action": "Click Save", "expected": "ok"}],
+         "_qmetry_execution_id": 111},
+    ]
+    monkeypatch.setattr(server_mod, "_make_case_source", lambda: _fake_case_source(cases))
+    monkeypatch.setattr(server_mod, "_qmetry_configured", lambda: True)
+    monkeypatch.setattr(server_mod, "_qmetry_execution_mode", lambda: "edit")
+    client.get("/manual/TP-45")
+    client.post("/manual/TP-45/cases/A/mark", json={"status": "pass"})
+
+    async def _writer(clientobj, **kwargs):
+        from agent.qmetry import WriteResult
+        return WriteResult(exec_id=111, steps_written=1, errors=[])
+    monkeypatch.setattr("agent.qmetry.write_case_execution", _writer)
+    fake = AsyncMock(); fake.aclose = AsyncMock()
+    monkeypatch.setattr("agent.qmetry.QMetryClient", lambda **kw: fake)
+
+    invalidate = MagicMock()
+    monkeypatch.setattr(server_mod, "invalidate_case_cache", invalidate)
+
+    r = client.post("/manual/TP-45/push-qmetry")
+    assert r.status_code == 200
+    invalidate.assert_called_once()
+    assert invalidate.call_args.args[0] == "TP-45"
+
+
+def test_manual_push_qmetry_no_invalidation_when_nothing_pushed(client, tmp_path, monkeypatch):
+    monkeypatch.setattr("agent.manual_state.MANUAL_DIR", tmp_path)
+    server_mod.MANUAL = server_mod.ManualStore()
+    cases = [
+        {"id": "A", "name": "Case A", "steps": [], "_qmetry_execution_id": None},
+    ]
+    monkeypatch.setattr(server_mod, "_make_case_source", lambda: _fake_case_source(cases))
+    monkeypatch.setattr(server_mod, "_qmetry_configured", lambda: True)
+    monkeypatch.setattr(server_mod, "_qmetry_execution_mode", lambda: "edit")
+    client.get("/manual/TP-45")
+    client.post("/manual/TP-45/cases/A/mark", json={"status": "pass"})
+
+    fake = AsyncMock(); fake.aclose = AsyncMock()
+    monkeypatch.setattr("agent.qmetry.QMetryClient", lambda **kw: fake)
+
+    invalidate = MagicMock()
+    monkeypatch.setattr(server_mod, "invalidate_case_cache", invalidate)
+
+    r = client.post("/manual/TP-45/push-qmetry")
+    assert r.status_code == 200
+    assert r.json()["pushed"] == []
+    invalidate.assert_not_called()
 
 
 # ----- run-agent step selection ---------------------------------------------
@@ -1773,6 +1894,49 @@ def test_run_push_qmetry_requires_done_run(client, monkeypatch):
     assert r.status_code == 409
 
 
+def test_run_push_qmetry_409_when_a_case_did_not_pass(client, monkeypatch):
+    """All-pass gate on the run endpoint: one non-pass case 409s the push."""
+    from agent.run_state import new_run_state, TestCase, Step
+    monkeypatch.setattr(server_mod, "_qmetry_configured", lambda: True)
+
+    state = new_run_state("CY-1", "Cycle 1")
+    case_a = TestCase(id="A", name="Case A")
+    case_a.steps = [Step(action="s1", detail="", status="pass", evaluation="ok")]
+    case_a.status = "pass"
+    case_b = TestCase(id="B", name="Case B")
+    case_b.steps = [Step(action="s1", detail="", status="fail", evaluation="bad")]
+    case_b.status = "fail"
+    state.add_case(case_a)
+    state.add_case(case_b)
+    state.start_run(); state.finish()
+    server_mod.RUNS[state.run_id] = state
+
+    r = client.post(f"/runs/{state.run_id}/push-qmetry")
+    assert r.status_code == 409
+    detail = r.json()["detail"].lower()
+    assert "1" in detail
+    assert "all-pass" in detail
+
+
+def test_run_push_qmetry_409_for_standalone_plan(client, monkeypatch):
+    """A standalone TC: plan has no execution to write to — same guard the
+    manual endpoint already applies."""
+    from agent.run_state import new_run_state, TestCase, Step
+
+    monkeypatch.setattr(server_mod, "_qmetry_configured", lambda: True)
+    state = new_run_state("TC:SOUSCLOUD-TC-2", "TC-2")
+    case = TestCase(id="A", name="Case A")
+    case.steps = [Step(action="s1", detail="", status="pass", evaluation="ok")]
+    case.status = "pass"
+    state.add_case(case)
+    state.start_run(); state.finish()
+    server_mod.RUNS[state.run_id] = state
+
+    r = client.post(f"/runs/{state.run_id}/push-qmetry")
+    assert r.status_code == 409
+    assert "standalone" in r.json()["detail"].lower()
+
+
 def test_run_push_qmetry_writes_each_case(client, monkeypatch):
     from agent.run_state import new_run_state, TestCase, Step
     monkeypatch.setattr(server_mod, "_qmetry_configured", lambda: True)
@@ -1782,7 +1946,7 @@ def test_run_push_qmetry_writes_each_case(client, monkeypatch):
     case = TestCase(id="A", name="Case A")
     case.steps = [Step(action="s1", detail="", status="pass", evaluation="ok"),
                   Step(action="s2", detail="", status="fail", evaluation="bad")]
-    case.status = "fail"
+    case.status = "pass"
     state.add_case(case)
     state.start_run(); state.finish()
     server_mod.RUNS[state.run_id] = state
@@ -1805,9 +1969,119 @@ def test_run_push_qmetry_writes_each_case(client, monkeypatch):
     assert r.status_code == 200
     assert r.json()["pushed"] == ["A"]
     assert calls[0]["execution_id"] == 111
-    assert calls[0]["case_status"] == "fail"
+    assert calls[0]["case_status"] == "pass"
     assert calls[0]["step_results"][0][0] == "pass"
     assert calls[0]["step_results"][1][0] == "fail"
+
+
+def test_run_push_qmetry_returns_details_and_step_totals(client, monkeypatch):
+    """WriteResult per-step data must reach the caller — previously thrown
+    away, leaving per-step write failures invisible."""
+    from agent.run_state import new_run_state, TestCase, Step
+
+    monkeypatch.setattr(server_mod, "_qmetry_configured", lambda: True)
+    monkeypatch.setattr(server_mod, "_qmetry_execution_mode", lambda: "edit")
+
+    state = new_run_state("CY-1", "Cycle 1")
+    case = TestCase(id="A", name="Case A")
+    case.steps = [Step(action="s1", detail="", status="pass", evaluation="ok")]
+    case.status = "pass"
+    state.add_case(case)
+    state.start_run(); state.finish()
+    server_mod.RUNS[state.run_id] = state
+
+    src_cases = [{"id": "A", "name": "Case A", "steps": [{}],
+                  "_qmetry_execution_id": 111, "_qmetry_cycle_id": "CYC-1",
+                  "_qmetry_tc_id": "tc1", "_qmetry_version_no": 1}]
+    monkeypatch.setattr(server_mod, "_make_case_source", lambda: _fake_case_source(src_cases))
+
+    async def _writer(clientobj, **kwargs):
+        from agent.qmetry import WriteResult
+        return WriteResult(
+            exec_id=111, steps_written=1,
+            errors=[{"step_index": 3, "step_exec_id": 999, "error": "boom"}],
+        )
+    monkeypatch.setattr("agent.qmetry.write_case_execution", _writer)
+    fake = AsyncMock(); fake.aclose = AsyncMock()
+    monkeypatch.setattr("agent.qmetry.QMetryClient", lambda **kw: fake)
+
+    r = client.post(f"/runs/{state.run_id}/push-qmetry")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["pushed"] == ["A"]
+    assert body["steps_written"] == 1
+    assert body["step_errors"] == 1
+    assert body["details"] == [{
+        "case": "A", "exec_id": 111, "steps_written": 1,
+        "step_errors": [{"step_index": 3, "step_exec_id": 999, "error": "boom"}],
+    }]
+
+
+def test_run_push_qmetry_invalidates_cache_on_success(client, monkeypatch):
+    from agent.run_state import new_run_state, TestCase, Step
+
+    monkeypatch.setattr(server_mod, "_qmetry_configured", lambda: True)
+    monkeypatch.setattr(server_mod, "_qmetry_execution_mode", lambda: "edit")
+
+    state = new_run_state("CY-1", "Cycle 1")
+    case = TestCase(id="A", name="Case A")
+    case.steps = [Step(action="s1", detail="", status="pass", evaluation="ok")]
+    case.status = "pass"
+    state.add_case(case)
+    state.start_run(); state.finish()
+    server_mod.RUNS[state.run_id] = state
+
+    src_cases = [{"id": "A", "name": "Case A", "steps": [{}],
+                  "_qmetry_execution_id": 111, "_qmetry_cycle_id": "CYC-1",
+                  "_qmetry_tc_id": "tc1", "_qmetry_version_no": 1}]
+    monkeypatch.setattr(server_mod, "_make_case_source", lambda: _fake_case_source(src_cases))
+
+    async def _writer(clientobj, **kwargs):
+        from agent.qmetry import WriteResult
+        return WriteResult(exec_id=111, steps_written=1, errors=[])
+    monkeypatch.setattr("agent.qmetry.write_case_execution", _writer)
+    fake = AsyncMock(); fake.aclose = AsyncMock()
+    monkeypatch.setattr("agent.qmetry.QMetryClient", lambda **kw: fake)
+
+    invalidate = MagicMock()
+    monkeypatch.setattr(server_mod, "invalidate_case_cache", invalidate)
+
+    r = client.post(f"/runs/{state.run_id}/push-qmetry")
+    assert r.status_code == 200
+    invalidate.assert_called_once()
+    assert invalidate.call_args.args[0] == "CY-1"
+
+
+def test_run_push_qmetry_no_invalidation_when_nothing_pushed(client, monkeypatch):
+    """Every case skipped (no execution id) -> nothing pushed -> no
+    invalidation, since nothing in QMetry changed."""
+    from agent.run_state import new_run_state, TestCase, Step
+
+    monkeypatch.setattr(server_mod, "_qmetry_configured", lambda: True)
+    monkeypatch.setattr(server_mod, "_qmetry_execution_mode", lambda: "edit")
+
+    state = new_run_state("CY-1", "Cycle 1")
+    case = TestCase(id="A", name="Case A")
+    case.steps = [Step(action="s1", detail="", status="pass", evaluation="ok")]
+    case.status = "pass"
+    state.add_case(case)
+    state.start_run(); state.finish()
+    server_mod.RUNS[state.run_id] = state
+
+    src_cases = [{"id": "A", "name": "Case A", "steps": [{}],
+                  "_qmetry_execution_id": None, "_qmetry_cycle_id": "CYC-1"}]
+    monkeypatch.setattr(server_mod, "_make_case_source", lambda: _fake_case_source(src_cases))
+
+    fake = AsyncMock(); fake.aclose = AsyncMock()
+    monkeypatch.setattr("agent.qmetry.QMetryClient", lambda **kw: fake)
+
+    invalidate = MagicMock()
+    monkeypatch.setattr(server_mod, "invalidate_case_cache", invalidate)
+
+    r = client.post(f"/runs/{state.run_id}/push-qmetry")
+    assert r.status_code == 200
+    assert r.json()["pushed"] == []
+    invalidate.assert_not_called()
 
 
 def test_run_push_qmetry_body_mode_overrides_env(client, monkeypatch):
@@ -1819,7 +2093,7 @@ def test_run_push_qmetry_body_mode_overrides_env(client, monkeypatch):
     case = TestCase(id="A", name="Case A")
     case.steps = [Step(action="s1", detail="", status="pass", evaluation="ok"),
                   Step(action="s2", detail="", status="fail", evaluation="bad")]
-    case.status = "fail"
+    case.status = "pass"
     state.add_case(case)
     state.start_run(); state.finish()
     server_mod.RUNS[state.run_id] = state
@@ -1852,7 +2126,7 @@ def test_run_push_qmetry_no_body_falls_back_to_env(client, monkeypatch):
     case = TestCase(id="A", name="Case A")
     case.steps = [Step(action="s1", detail="", status="pass", evaluation="ok"),
                   Step(action="s2", detail="", status="fail", evaluation="bad")]
-    case.status = "fail"
+    case.status = "pass"
     state.add_case(case)
     state.start_run(); state.finish()
     server_mod.RUNS[state.run_id] = state

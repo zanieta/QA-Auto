@@ -470,16 +470,27 @@ live-incrementing during a run). Numbers in mono 20/500, labels Inter 11/muted.
   the run finishes. "Log failures to Jira" enables ONLY if there is at least one
   failure. This is the human-in-the-loop gate — the agent proposes, the tester
   approves the side-effectful write.
-- **"Push results to QMetry"** — disabled during a run and until the run finishes.
-  Clicking it asks the tester to choose **Current execution** or **New execution**
-  (inline, two buttons + Cancel — no modal, no floating toast); the choice is sent
-  as the push `mode` (`edit` = current, `create` = new). Choosing a target then
-  ALWAYS asks a final confirmation naming the mode and its consequence (edit
-  replaces the existing execution's results; create adds a new one) — the write
-  only fires on confirm. Once confirmed, while pushing
-  it shows a spinner and reads "Pushing…" (`aria-busy="true"`); the outcome (pushed
-  / skipped / errors counts) appears inline in the foot, styled red on error, never
-  a floating toast. It is the Live-tab equivalent of the Manual tab's push gate.
+- **"Push results to QMetry"** — disabled during a run, until the run finishes,
+  AND unless every case passed (zero failed, zero blocked) — QMetry accepts an
+  all-pass run only, so a run with any fail/blocked case keeps the button
+  disabled with a `title` naming why ("N case(s) did not pass — QMetry accepts
+  an all-pass run only") rather than a soft warning. The button is ABSENT
+  entirely (not present-but-disabled) when the run's plan is a standalone
+  `TC:<case key>` library plan — there is no execution to write into, the same
+  rule the Manual tab already applies. Clicking it asks the tester to choose
+  **Current execution** or **New execution** (inline, two buttons + Cancel —
+  no modal, no floating toast); the choice is sent as the push `mode` (`edit` =
+  current, `create` = new). Choosing a target then ALWAYS asks a final
+  confirmation naming the mode and its consequence (edit replaces the existing
+  execution's results; create adds a new one) — the write only fires on
+  confirm. Once confirmed, while pushing it shows a spinner and reads
+  "Pushing…" (`aria-busy="true"`); the outcome appears inline in the foot as
+  "Pushed N cases · N steps · N errors", styled red (`role="alert"`) and
+  naming the affected case ids when any step-level or case-level error
+  occurred — never a floating toast. A successful push also refetches the
+  manual session backing the rail so its QMetry status stripes/pills reflect
+  the write immediately; a failed refetch does not turn a successful push's
+  message red. It is the Live-tab equivalent of the Manual tab's push gate.
 
 ---
 
@@ -570,9 +581,11 @@ poll lag so steps appear the instant the agent resolves them.
   HTTP path served by the server's own `/reports` static mount, not a
   filesystem path, so `window.open(path, '_blank')` actually opens it.
 - `POST /runs/{id}/log-bugs` → creates Jira bugs for failed cases (the gated button).
-- `POST /runs/{id}/push-qmetry` → `{pushed, skipped, errors}`; gated (409 unless
-  QMetry configured and the run is done) — writes per-step results, explicit,
-  never automatic.
+- `POST /runs/{id}/push-qmetry` → `{pushed, skipped, errors, details:
+  [{case, exec_id, steps_written, step_errors: []}], steps_written,
+  step_errors}`; gated (409 unless QMetry configured, the run is done, the
+  result is all-pass — zero failed, zero blocked — and the plan is not a
+  standalone `TC:` plan) — writes per-step results, explicit, never automatic.
 - `POST /stop` (no body) → `{"cancelled": ["run-1a2b3c4d", …]}`. **Emergency
   stop**: cancels EVERY in-flight run in one press — the Live-run plan and any
   Manual-tab per-case agent run alike. Idempotent: `200` with an empty list
@@ -733,8 +746,11 @@ existing cycle case-search response, so it costs no extra QMetry call.
   → updated case dict. Per-case login the agent uses instead of the `.env`
   default; both empty clears back to the default. The password is never sent
   back to the browser — only `has_password` (a boolean) is.
-- `POST /manual/{plan}/push-qmetry` → `{pushed, skipped, errors}`; gated (409 if QMetry
-  not configured or nothing marked). This is the human-in-the-loop write gate, like
+- `POST /manual/{plan}/push-qmetry` → `{pushed, skipped, errors, details:
+  [{case, exec_id, steps_written, step_errors: []}], steps_written,
+  step_errors}`; gated (409 if QMetry not configured, nothing marked, any
+  marked case is fail/blocked — the result must be all-pass — or the plan is
+  a standalone `TC:` plan). This is the human-in-the-loop write gate, like
   "Log failures to Jira" on the Live tab.
 - `POST /runs/{run_id}/cancel` → `{"cancelled": true}` (404 if the run is unknown or
   already finished). Used by the Manual tab's per-case agent run (see "Cancelling a
@@ -801,8 +817,11 @@ hydrate.
   `agent_note` is still recorded server-side and still goes into the QMetry
   comment on push — only the on-screen block is gone.
 - "Push results to QMetry" is disabled during an agent run, when nothing is marked,
-  and when `qmetry_configured` is false (shows "Connect QMetry to push results").
-  Since the agent verdict now sets the status, finishing a run is what unlocks it.
+  when `qmetry_configured` is false (shows "Connect QMetry to push results"), and
+  when any MARKED case is fail or blocked (shows "A marked case is fail or
+  blocked — QMetry accepts an all-pass run only") — QMetry accepts an all-pass
+  run only, matching the Live tab's StageFoot gate. Since the agent verdict now
+  sets the status, finishing a run with every case passing is what unlocks it.
 - Each step also has an "agent" checkbox (all checked by default). "Run selected
   steps with agent" executes only the checked steps in a fresh browser session; a
   muted hint reads "The agent starts from the dashboard after login — do unchecked
@@ -835,11 +854,17 @@ hydrate.
   a spinner and reads "Pushing…"
   (`aria-busy="true"`) for the duration of the push; the existing disabled/gated
   states (see "Marking UX" above) are unchanged, just now visibly communicated.
-- The push result or error message renders inline in the footer's status line
-  (styled red on error), not as a separate floating banner. A previous
-  implementation additionally floated a fixed-position toast over the push
-  button on load errors — that has been removed; the inline "Could not load
-  cycle…" message above the case panel is the only place a load error appears.
+- The push result reads "Pushed N cases · N steps · N errors" (styled red,
+  `role="alert"`, and naming the affected case ids) when any step-level or
+  case-level error occurred; a clean push shows the same line with 0 errors.
+  It renders inline in the footer's status line, not as a separate floating
+  banner. A previous implementation additionally floated a fixed-position
+  toast over the push button on load errors — that has been removed; the
+  inline "Could not load cycle…" message above the case panel is the only
+  place a load error appears.
+- A successful push refetches the manual session (`GET /manual/{plan}`) so the
+  case pills and the rail's QMetry status dots reflect the write immediately;
+  a failed refetch never turns a successful push's message red.
 
 ---
 

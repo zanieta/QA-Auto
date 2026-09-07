@@ -3,19 +3,32 @@
 // Gate rules:
 //   "View report"            — disabled during a run; enabled when done
 //   "Log failures to Jira"   — disabled during a run AND when zero failures
-//   "Push results to QMetry" — disabled during a run and until the run is done.
+//   "Push results to QMetry" — disabled during a run, until the run is done,
+//     AND unless every case passed (zero failed, zero blocked) — QMetry
+//     accepts an all-pass run only, so a run with any fail/blocked case keeps
+//     the button disabled with a title naming why, never a soft warning.
+//     ABSENT ENTIRELY (not present-but-disabled) when the run's plan is a
+//     standalone "TC:<case key>" library plan — there is no execution to
+//     write into, matching ManualView's `standalone` rule.
 //     Clicking it asks the tester whether to write to the CURRENT execution or
 //     CREATE a new one; the choice is sent to the backend. While pushing it
-//     shows a spinner + "Pushing…"; the result shows inline, red on error.
+//     shows a spinner + "Pushing…"; the result shows inline, red on error —
+//     "Pushed N cases · N steps · N errors", naming affected cases when
+//     step_errors or errors is non-zero. A successful push also refetches the
+//     rail's QMetry data (via `onPushed`) so the status dots/pills reflect
+//     what QMetry now holds.
 // The backend enforces the same gates; this UI gate is part of the design.
 
 import { useState } from 'react'
 
-export default function StageFoot({ state, activeCase, onReport, onLogBugs, onPushQmetry }) {
+export default function StageFoot({ state, activeCase, onReport, onLogBugs, onPushQmetry, onPushed }) {
   const status = state?.status ?? 'idle'
   const failed = state?.summary?.failed ?? 0
+  const blocked = state?.summary?.blocked ?? 0
   const isRunning = status === 'running'
   const isDone = status === 'done'
+  const isStandalonePlan = Boolean(state?.plan?.key?.startsWith('TC:'))
+  const notAllPassed = failed > 0 || blocked > 0
 
   const [choosing, setChoosing] = useState(false)
   const [pushing, setPushing] = useState(false)
@@ -36,10 +49,10 @@ export default function StageFoot({ state, activeCase, onReport, onLogBugs, onPu
     setPushMsg(null)
     try {
       const r = await onPushQmetry(mode)
-      const n = r.errors.length
-      setPushMsg(
-        `Pushed ${r.pushed.length}, skipped ${r.skipped.length}, ${n} error${n === 1 ? '' : 's'}`,
-      )
+      const { text, failed: hadErrors } = describePush(r)
+      setPushMsg(text)
+      setPushFailed(hadErrors)
+      await onPushed?.() // refetch so the rail's QMetry dots/pills show the write
     } catch (e) {
       setPushFailed(true)
       setPushMsg(e.message)
@@ -48,7 +61,10 @@ export default function StageFoot({ state, activeCase, onReport, onLogBugs, onPu
     }
   }
 
-  const pushDisabled = isRunning || !isDone
+  const pushDisabled = isRunning || !isDone || notAllPassed
+  const pushTitle = notAllPassed
+    ? `${failed + blocked} case(s) did not pass — QMetry accepts an all-pass run only`
+    : 'Write per-step Pass/Fail results to QMetry'
 
   return (
     <div className="stage-foot">
@@ -87,7 +103,7 @@ export default function StageFoot({ state, activeCase, onReport, onLogBugs, onPu
           Log failures to Jira
         </button>
 
-        {pushing ? (
+        {isStandalonePlan ? null : pushing ? (
           <button type="button" className="btn btn-secondary" disabled aria-busy="true">
             <span className="spinner" aria-hidden="true" />
             Pushing…
@@ -111,7 +127,7 @@ export default function StageFoot({ state, activeCase, onReport, onLogBugs, onPu
             className="btn btn-secondary"
             disabled={pushDisabled}
             onClick={() => setChoosing(true)}
-            title="Write per-step Pass/Fail results to QMetry"
+            title={pushTitle}
           >
             Push results to QMetry
           </button>
@@ -119,6 +135,28 @@ export default function StageFoot({ state, activeCase, onReport, onLogBugs, onPu
       </div>
     </div>
   )
+}
+
+// Builds the push result line from the backend's response shape:
+// { pushed, skipped, errors, details: [{case, exec_id, steps_written,
+// step_errors: []}], steps_written, step_errors }. Names the affected cases
+// when anything went wrong so a run where every step silently failed cannot
+// read as clean.
+function describePush(r) {
+  const n = r.pushed.length
+  const steps = r.steps_written ?? 0
+  const stepErrCount = r.step_errors ?? 0
+  const caseErrCount = r.errors?.length ?? 0
+  const totalErrors = stepErrCount + caseErrCount
+  const base = `Pushed ${n} case${n === 1 ? '' : 's'} · ${steps} step${steps === 1 ? '' : 's'} · ${totalErrors} error${totalErrors === 1 ? '' : 's'}`
+  if (totalErrors === 0) return { text: base, failed: false }
+  const affected = new Set()
+  ;(r.errors ?? []).forEach((e) => affected.add(e.case))
+  ;(r.details ?? []).forEach((d) => {
+    if ((d.step_errors ?? []).length) affected.add(d.case)
+  })
+  const names = [...affected].join(', ')
+  return { text: names ? `${base} — ${names}` : base, failed: true }
 }
 
 function statusSentence(state, activeCase) {

@@ -505,6 +505,7 @@ export default function App() {
               onReport={handleReport}
               onLogBugs={handleLogBugs}
               onPushQmetry={runId ? (mode) => pushRunToQmetry(runId, mode) : undefined}
+              onPushed={refreshManual}
             />
           </>
         ) : (

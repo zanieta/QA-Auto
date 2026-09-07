@@ -43,12 +43,22 @@ export default function ManualView({
   }, [plan, activeCase, refresh])
   const summary = state?.summary ?? { total: 0, passed: 0, failed: 0, blocked: 0, unmarked: 0 }
   const anyMarked = summary.total - summary.unmarked > 0
+  // QMetry accepts an all-pass run only: any MARKED case that is fail or
+  // blocked blocks the push, same rule as the Live tab's StageFoot.
+  const anyMarkedNotPassed = Boolean(
+    state?.cases?.some((c) => c.manual.status === 'fail' || c.manual.status === 'blocked'),
+  )
   const agentRunning = state?.cases?.some((c) => c.manual.agent_status === 'running')
   // A library test case has no execution to write into, so there is nothing to
   // push — the control is absent rather than present-but-disabled.
   const standalone = Boolean(state?.standalone)
   const pushEnabled =
-    state?.qmetry_configured && !standalone && anyMarked && !agentRunning && !pushing
+    state?.qmetry_configured &&
+    !standalone &&
+    anyMarked &&
+    !anyMarkedNotPassed &&
+    !agentRunning &&
+    !pushing
   const [choosing, setChoosing] = useState(false)
 
   async function handlePush(mode) {
@@ -65,8 +75,10 @@ export default function ManualView({
     setPushFailed(false)
     try {
       const res = await pushToQmetry(plan, mode)
-      setPushMsg(`Pushed ${res.pushed.length} · skipped ${res.skipped.length} · errors ${res.errors.length}`)
-      await refresh?.()
+      const { text, failed: hadErrors } = describePush(res)
+      setPushMsg(text)
+      setPushFailed(hadErrors)
+      await refresh?.() // refetch so the rail's QMetry dots/pills show the write
     } catch (e) {
       setPushMsg(e.message)
       setPushFailed(true)
@@ -79,9 +91,11 @@ export default function ManualView({
     ? 'Connect QMetry to push results'
     : !anyMarked
       ? 'Mark at least one case first'
-      : agentRunning
-        ? 'Wait for the agent run to finish'
-        : 'Push manual results to the QMetry cycle'
+      : anyMarkedNotPassed
+        ? 'A marked case is fail or blocked — QMetry accepts an all-pass run only'
+        : agentRunning
+          ? 'Wait for the agent run to finish'
+          : 'Push manual results to the QMetry cycle'
 
   return (
     <div className="manual">
@@ -160,6 +174,28 @@ export default function ManualView({
       </footer>
     </div>
   )
+}
+
+// Builds the push result line from the backend's response shape:
+// { pushed, skipped, errors, details: [{case, exec_id, steps_written,
+// step_errors: []}], steps_written, step_errors }. Names the affected cases
+// when anything went wrong so a run where every step silently failed cannot
+// read as clean. Mirrors StageFoot.jsx's describePush (Live tab).
+function describePush(r) {
+  const n = r.pushed.length
+  const steps = r.steps_written ?? 0
+  const stepErrCount = r.step_errors ?? 0
+  const caseErrCount = r.errors?.length ?? 0
+  const totalErrors = stepErrCount + caseErrCount
+  const base = `Pushed ${n} case${n === 1 ? '' : 's'} · ${steps} step${steps === 1 ? '' : 's'} · ${totalErrors} error${totalErrors === 1 ? '' : 's'}`
+  if (totalErrors === 0) return { text: base, failed: false }
+  const affected = new Set()
+  ;(r.errors ?? []).forEach((e) => affected.add(e.case))
+  ;(r.details ?? []).forEach((d) => {
+    if ((d.step_errors ?? []).length) affected.add(d.case)
+  })
+  const names = [...affected].join(', ')
+  return { text: names ? `${base} — ${names}` : base, failed: true }
 }
 
 function Stat({ label, value, cls }) {

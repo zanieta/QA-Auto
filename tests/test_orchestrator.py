@@ -944,6 +944,160 @@ async def test_translator_receives_whole_case_context():
 
 
 @pytest.mark.asyncio
+async def test_case_brief_includes_precondition_and_test_data():
+    """A case's precondition and case-level test data must reach the
+    translator — they were shown in the console but never sent to the model."""
+    cases = [{
+        "id": "SOUSCLOUD-TC-1985",
+        "name": "Verify Edit Inventory",
+        "precondition": "User is logged in as an Admin",
+        "test_data": [
+            {"name": "User Role", "value": "Admin"},
+            {"name": "PHU Type", "value": "RFHU (H2)"},
+        ],
+        "steps": [
+            {"action": "Open Recipe menu", "expected": "Submenu visible"},
+        ],
+    }]
+    azure = _fake_azure(
+        translate_side_effect=[_ok_actions()],
+        evaluate_side_effect=[{"status": "pass", "reason": "ok"}],
+    )
+    orch = Orchestrator(
+        azure=azure,
+        browser_factory=_fake_browser,
+        case_source=FakeCaseSource({"key": "X", "name": "x"}, cases),
+        on_update=lambda s: None,
+    )
+    await orch.run_single_case("SOUSCLOUD-TC-1985")
+
+    ctx = azure.translate_step.call_args_list[0].kwargs["app_context"]
+    assert "TEST CASE: SOUSCLOUD-TC-1985 — Verify Edit Inventory" in ctx
+    assert "PRECONDITION: User is logged in as an Admin" in ctx
+    assert "CASE TEST DATA — use these exact values, never invent substitutes:" in ctx
+    assert "  User Role = Admin" in ctx
+    assert "  PHU Type = RFHU (H2)" in ctx
+    # Precondition/test data must precede the step list.
+    assert ctx.index("PRECONDITION") < ctx.index("CASE TEST DATA")
+    assert ctx.index("CASE TEST DATA") < ctx.index("Steps:")
+
+
+@pytest.mark.asyncio
+async def test_case_brief_precondition_only():
+    """test_data absent (empty list / missing) — no CASE TEST DATA block, but
+    the precondition still appears."""
+    cases = [{
+        "id": "A", "name": "Alpha",
+        "precondition": "Some precondition",
+        "steps": [{"action": "Click Save", "expected": "Saved"}],
+    }]
+    azure = _fake_azure(
+        translate_side_effect=[_ok_actions()],
+        evaluate_side_effect=[{"status": "pass", "reason": "ok"}],
+    )
+    orch = Orchestrator(
+        azure=azure,
+        browser_factory=_fake_browser,
+        case_source=FakeCaseSource({"key": "X", "name": "x"}, cases),
+        on_update=lambda s: None,
+    )
+    await orch.run_single_case("A")
+
+    ctx = azure.translate_step.call_args_list[0].kwargs["app_context"]
+    assert "PRECONDITION: Some precondition" in ctx
+    assert "CASE TEST DATA" not in ctx
+
+
+@pytest.mark.asyncio
+async def test_case_brief_test_data_only():
+    """precondition absent — no PRECONDITION line, but CASE TEST DATA still
+    appears; a row with an empty name is skipped."""
+    cases = [{
+        "id": "A", "name": "Alpha",
+        "test_data": [
+            {"name": "Menu", "value": "Recipe"},
+            {"name": "", "value": "should be skipped"},
+        ],
+        "steps": [{"action": "Click Save", "expected": "Saved"}],
+    }]
+    azure = _fake_azure(
+        translate_side_effect=[_ok_actions()],
+        evaluate_side_effect=[{"status": "pass", "reason": "ok"}],
+    )
+    orch = Orchestrator(
+        azure=azure,
+        browser_factory=_fake_browser,
+        case_source=FakeCaseSource({"key": "X", "name": "x"}, cases),
+        on_update=lambda s: None,
+    )
+    await orch.run_single_case("A")
+
+    ctx = azure.translate_step.call_args_list[0].kwargs["app_context"]
+    assert "PRECONDITION" not in ctx
+    assert "  Menu = Recipe" in ctx
+    assert "should be skipped" not in ctx
+
+
+@pytest.mark.asyncio
+async def test_case_brief_precondition_truncated():
+    """A long precondition is whitespace-collapsed and truncated to 500 chars
+    with a trailing ellipsis, so it can't crowd out the element snapshot."""
+    long_precondition = "word " * 200  # far more than 500 chars, has extra whitespace
+    cases = [{
+        "id": "A", "name": "Alpha",
+        "precondition": long_precondition,
+        "steps": [{"action": "Click Save", "expected": "Saved"}],
+    }]
+    azure = _fake_azure(
+        translate_side_effect=[_ok_actions()],
+        evaluate_side_effect=[{"status": "pass", "reason": "ok"}],
+    )
+    orch = Orchestrator(
+        azure=azure,
+        browser_factory=_fake_browser,
+        case_source=FakeCaseSource({"key": "X", "name": "x"}, cases),
+        on_update=lambda s: None,
+    )
+    await orch.run_single_case("A")
+
+    ctx = azure.translate_step.call_args_list[0].kwargs["app_context"]
+    line = next(l for l in ctx.splitlines() if l.startswith("PRECONDITION:"))
+    text = line[len("PRECONDITION: "):]
+    assert text.endswith("…")
+    assert len(text) == 500
+    assert "  " not in text.rstrip("…")  # whitespace collapsed
+
+
+@pytest.mark.asyncio
+async def test_case_brief_unchanged_when_both_absent():
+    """Regression guard: with no precondition and no test_data, the case
+    brief must be byte-identical to the pre-feature shape."""
+    cases = [{"id": "A", "name": "Alpha", "steps": [
+        {"action": "Click Save", "expected": ""},
+    ]}]
+    azure = _fake_azure(
+        translate_side_effect=[_ok_actions()],
+        evaluate_side_effect=[{"status": "pass", "reason": "ok"}],
+    )
+    orch = Orchestrator(
+        azure=azure,
+        browser_factory=_fake_browser,
+        case_source=FakeCaseSource({"key": "X", "name": "x"}, cases),
+        on_update=lambda s: None,
+    )
+    await orch.run_single_case("A")
+
+    ctx = azure.translate_step.call_args_list[0].kwargs["app_context"]
+    expected = (
+        "TEST CASE: A — Alpha\n"
+        "Steps:\n"
+        "  1. Click Save  [>> CURRENT — execute ONLY this step now]\n"
+        "current URL: https://app/"
+    )
+    assert ctx == expected
+
+
+@pytest.mark.asyncio
 async def test_translator_receives_expected_result_in_context():
     """The CURRENT step's expected result must reach the translator so it can
     apply the RECONCILE-FIRST rule (e.g. recognizing that a step like

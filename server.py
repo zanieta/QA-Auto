@@ -726,6 +726,23 @@ async def push_run_to_qmetry(run_id: str, body: PushBody | None = None) -> dict:
     if state.status != "done":
         raise HTTPException(409, "Run is not finished yet")
 
+    from agent.qmetry import is_standalone_plan
+
+    if is_standalone_plan(state.plan.key):
+        raise HTTPException(
+            409,
+            "A standalone test case has no execution to write to — open it "
+            "through a test run to record results in QMetry",
+        )
+
+    non_passing = [c for c in state.test_cases if c.status != "pass"]
+    if non_passing:
+        raise HTTPException(
+            409,
+            f"{len(non_passing)} case(s) did not pass — push is only allowed "
+            "on an all-pass run",
+        )
+
     source = _make_case_source()
     # Only the QMetry ids are needed here — the step text comes from the run.
     src_cases = {
@@ -739,6 +756,7 @@ async def push_run_to_qmetry(run_id: str, body: PushBody | None = None) -> dict:
     pushed: list[str] = []
     skipped: list[str] = []
     errors: list[dict] = []
+    details: list[dict] = []
     try:
         for case in state.test_cases:
             src = src_cases.get(case.id)
@@ -754,7 +772,7 @@ async def push_run_to_qmetry(run_id: str, body: PushBody | None = None) -> dict:
                 if s.status in ("pass", "fail", "blocked")
             }
             try:
-                await write_case_execution(
+                result = await write_case_execution(
                     client,
                     cycle_id=src.get("_qmetry_cycle_id") or state.plan.key,
                     execution_id=src["_qmetry_execution_id"],
@@ -765,6 +783,12 @@ async def push_run_to_qmetry(run_id: str, body: PushBody | None = None) -> dict:
                     mode=mode,
                 )
                 pushed.append(case.id)
+                details.append({
+                    "case": case.id,
+                    "exec_id": result.exec_id,
+                    "steps_written": result.steps_written,
+                    "step_errors": result.errors,
+                })
             except QMetryError as e:
                 errors.append({"case": case.id, "error": str(e)})
     finally:
@@ -774,7 +798,19 @@ async def push_run_to_qmetry(run_id: str, body: PushBody | None = None) -> dict:
                 await aclose()
             except Exception:
                 pass
-    return {"pushed": pushed, "skipped": skipped, "errors": errors}
+    if pushed:
+        try:
+            invalidate_case_cache(state.plan.key)
+        except Exception:
+            log.exception("Cache invalidation failed after pushing plan %s", state.plan.key)
+    return {
+        "pushed": pushed,
+        "skipped": skipped,
+        "errors": errors,
+        "details": details,
+        "steps_written": sum(d["steps_written"] for d in details),
+        "step_errors": sum(len(d["step_errors"]) for d in details),
+    }
 
 
 @app.get("/manual/{plan}")
@@ -989,6 +1025,14 @@ async def push_manual_to_qmetry(plan: str, body: PushBody | None = None) -> dict
     if not marked:
         raise HTTPException(409, "Nothing marked — mark at least one case first")
 
+    non_passing = [c for c in marked if c.mark.status != "pass"]
+    if non_passing:
+        raise HTTPException(
+            409,
+            f"{len(non_passing)} case(s) did not pass — push is only allowed "
+            "on an all-pass run",
+        )
+
     from agent.qmetry import QMetryClient, QMetryError, write_case_execution
 
     client = QMetryClient()
@@ -996,6 +1040,7 @@ async def push_manual_to_qmetry(plan: str, body: PushBody | None = None) -> dict
     pushed: list[str] = []
     skipped: list[str] = []
     errors: list[dict] = []
+    details: list[dict] = []
     try:
         for case in marked:
             if case.execution_id is None:
@@ -1007,7 +1052,7 @@ async def push_manual_to_qmetry(plan: str, body: PushBody | None = None) -> dict
                 if sm.get("status") in ("pass", "fail", "blocked")
             }
             try:
-                await write_case_execution(
+                result = await write_case_execution(
                     client,
                     cycle_id=case.execution_cycle_id or plan,
                     execution_id=case.execution_id,
@@ -1020,6 +1065,12 @@ async def push_manual_to_qmetry(plan: str, body: PushBody | None = None) -> dict
                 )
                 MANUAL.mark_pushed(plan, case.id)
                 pushed.append(case.id)
+                details.append({
+                    "case": case.id,
+                    "exec_id": result.exec_id,
+                    "steps_written": result.steps_written,
+                    "step_errors": result.errors,
+                })
             except QMetryError as e:
                 errors.append({"case": case.id, "error": str(e)})
     finally:
@@ -1030,7 +1081,20 @@ async def push_manual_to_qmetry(plan: str, body: PushBody | None = None) -> dict
             except Exception:
                 pass
 
-    return {"pushed": pushed, "skipped": skipped, "errors": errors}
+    if pushed:
+        try:
+            invalidate_case_cache(plan)
+        except Exception:
+            log.exception("Cache invalidation failed after pushing plan %s", plan)
+
+    return {
+        "pushed": pushed,
+        "skipped": skipped,
+        "errors": errors,
+        "details": details,
+        "steps_written": sum(d["steps_written"] for d in details),
+        "step_errors": sum(len(d["step_errors"]) for d in details),
+    }
 
 
 @app.get("/runs/{run_id}/stream")

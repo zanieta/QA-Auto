@@ -502,7 +502,25 @@ class Orchestrator:
         step_status: dict[int, str] = {}
 
         def _case_brief(current: int) -> str:
-            lines = [f"TEST CASE: {case_id} — {case.get('name', case_id)}", "Steps:"]
+            lines = [f"TEST CASE: {case_id} — {case.get('name', case_id)}"]
+            precondition = " ".join(str(case.get("precondition") or "").split())
+            if precondition:
+                if len(precondition) > 500:
+                    precondition = precondition[:499] + "…"
+                lines.append(f"PRECONDITION: {precondition}")
+            test_data = case.get("test_data") or []
+            rows = [
+                (row.get("name"), row.get("value"))
+                for row in test_data
+                if row.get("name")
+            ]
+            if rows:
+                lines.append(
+                    "CASE TEST DATA — use these exact values, never invent substitutes:"
+                )
+                for name, value in rows:
+                    lines.append(f"  {name} = {value}")
+            lines.append("Steps:")
             for i, s in enumerate(steps):
                 text = " ".join(str(s.get("action", "")).split())[:120]
                 if i == current:
